@@ -4,7 +4,7 @@ const backendUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "ht
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -17,7 +17,7 @@ export async function PUT(
 
     const token = authHeader.substring(7);
     const body = await request.json();
-    const assetId = params.id;
+    const { id: assetId } = await params;
 
     const response = await fetch(`${backendUrl}/api/assets/${assetId}`, {
       method: "PUT",
@@ -49,7 +49,7 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const authHeader = request.headers.get("authorization");
@@ -61,7 +61,7 @@ export async function DELETE(
     }
 
     const token = authHeader.substring(7);
-    const assetId = params.id;
+    const { id: assetId } = await params;
 
     const response = await fetch(`${backendUrl}/api/assets/${assetId}`, {
       method: "DELETE",
