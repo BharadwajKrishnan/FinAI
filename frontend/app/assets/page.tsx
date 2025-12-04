@@ -217,6 +217,7 @@ export default function AssetsPage() {
     };
 
     fetchAssets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   // Periodically update stock prices
