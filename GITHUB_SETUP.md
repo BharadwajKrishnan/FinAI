@@ -62,13 +62,19 @@ To create a Personal Access Token:
 4. Find and select your `FinanceAgent` repository
 5. Configure:
    - **Framework Preset**: Next.js (auto-detected)
-   - **Root Directory**: Click "Edit" and set to `frontend`
-   - **Build Command**: `npm run build` (auto)
-   - **Output Directory**: `.next` (auto)
-   - **Install Command**: `npm install` (auto)
+   - **Root Directory**: Click "Edit" → Type `frontend` → Click "Continue" (CRITICAL STEP!)
+   - **Build Command**: `npm run build` (will auto-detect after setting root directory)
+   - **Output Directory**: `.next` (will auto-detect after setting root directory)
+   - **Install Command**: `npm install` (will auto-detect after setting root directory)
+   
+   **IMPORTANT**: If you don't set Root Directory to `frontend`, the build will fail with "No such file or directory" error!
 6. Add Environment Variable:
-   - Name: `NEXT_PUBLIC_API_URL`
-   - Value: `http://localhost:8000` (you'll update this after deploying backend)
+   - Click "Environment Variables" section
+   - Click "Add" or "Add Environment Variable"
+   - **Name**: `NEXT_PUBLIC_API_URL`
+   - **Value**: `http://localhost:8000` (you'll update this after deploying backend)
+   - **Environments**: Select all (Production, Preview, Development)
+   - Click "Save"
 7. Click "Deploy"
 
 ## Step 5: Deploy Backend (Railway - Recommended)
@@ -90,10 +96,19 @@ To create a Personal Access Token:
 
 ## Step 6: Update Vercel Environment Variable
 
-1. Go back to Vercel dashboard
-2. Your project → Settings → Environment Variables
-3. Update `NEXT_PUBLIC_API_URL` to your Railway backend URL
-4. Redeploy (Vercel will auto-redeploy or click "Redeploy")
+1. Go back to Vercel dashboard (https://vercel.com/dashboard)
+2. Click on your **FinanceAgent** project
+3. Click **Settings** (top navigation bar)
+4. Click **Environment Variables** (left sidebar)
+5. Find `NEXT_PUBLIC_API_URL` and click the three dots (⋯) → **Edit**
+   - Or click **Add New** if it doesn't exist
+6. Update the **Value** to your Railway backend URL (e.g., `https://your-app.railway.app`)
+7. Make sure all environments are selected (Production, Preview, Development)
+8. Click **Save**
+9. Go to **Deployments** tab
+10. Click the three dots (⋯) on the latest deployment → **Redeploy**
+
+**See `VERCEL_ENV_VARS.md` for detailed instructions and troubleshooting.**
 
 ## Troubleshooting
 

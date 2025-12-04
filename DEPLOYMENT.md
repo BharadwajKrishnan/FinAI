@@ -42,14 +42,22 @@ If you haven't set up Git credentials, GitHub will prompt you to authenticate.
 3. Import your `FinanceAgent` repository
 4. Configure the project:
    - **Framework Preset**: Next.js (auto-detected)
-   - **Root Directory**: `frontend` (IMPORTANT!)
-   - **Build Command**: `npm run build` (auto-detected)
-   - **Output Directory**: `.next` (auto-detected)
-   - **Install Command**: `npm install` (auto-detected)
+   - **Root Directory**: Click "Edit" → Enter `frontend` → Click "Continue" (IMPORTANT!)
+   - **Build Command**: `npm run build` (will auto-detect after setting root directory)
+   - **Output Directory**: `.next` (will auto-detect after setting root directory)
+   - **Install Command**: `npm install` (will auto-detect after setting root directory)
+   
+   **CRITICAL**: You MUST set the Root Directory to `frontend` before deploying!
 
 5. Add Environment Variables:
-   - Click "Environment Variables"
-   - Add: `NEXT_PUBLIC_API_URL` = `https://your-backend-url.com` (you'll update this after deploying backend)
+   - Scroll down to **"Environment Variables"** section
+   - Click **"Add"** or **"Add Environment Variable"**
+   - **Name/Key**: `NEXT_PUBLIC_API_URL`
+   - **Value**: `http://localhost:8000` (you'll update this after deploying backend)
+   - **Environments**: Select all (Production, Preview, Development)
+   - Click **"Save"**
+   
+   **Note:** You ONLY need this one variable for Vercel. See `VERCEL_ENV_VARS.md` for details.
 
 6. Click "Deploy"
 
@@ -102,10 +110,23 @@ Vercel will automatically build and deploy your frontend. You'll get a URL like 
 
 ## Step 5: Update Frontend Environment Variable
 
-1. Go back to Vercel dashboard
-2. Navigate to your project → Settings → Environment Variables
-3. Update `NEXT_PUBLIC_API_URL` to your backend URL (e.g., `https://your-app.railway.app`)
-4. Redeploy the frontend (Vercel will auto-redeploy or you can trigger manually)
+1. Go back to Vercel dashboard (https://vercel.com/dashboard)
+2. Click on your **FinanceAgent** project
+3. Click **Settings** (top navigation bar)
+4. Click **Environment Variables** (left sidebar)
+5. Find `NEXT_PUBLIC_API_URL`:
+   - If it exists: Click the three dots (⋯) → **Edit**
+   - If it doesn't exist: Click **Add New**
+6. Update the **Value** to your backend URL:
+   - Railway: `https://your-app.railway.app`
+   - Render: `https://your-app.onrender.com`
+   - Fly.io: `https://your-app.fly.dev`
+7. Make sure all environments are selected (Production, Preview, Development)
+8. Click **Save**
+9. Go to **Deployments** tab
+10. Click the three dots (⋯) on the latest deployment → **Redeploy**
+
+**See `VERCEL_ENV_VARS.md` for detailed instructions and troubleshooting.**
 
 ## Step 6: Configure CORS
 
