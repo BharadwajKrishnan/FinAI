@@ -17,14 +17,20 @@ load_dotenv()
 app = FastAPI(title="FinanceApp API", version="1.0.0")
 
 # CORS middleware to allow frontend requests
+# Get allowed origins from environment variable or use defaults
+allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001"
+).split(",")
+
+# Add Vercel preview URLs pattern (will be set via environment variable in production)
+vercel_url = os.getenv("VERCEL_URL")
+if vercel_url:
+    allowed_origins.append(f"https://{vercel_url}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js dev server
-        "http://127.0.0.1:3000",  # Alternative localhost format
-        "http://localhost:3001",  # Alternative port
-        "http://127.0.0.1:3001",  # Alternative port
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
