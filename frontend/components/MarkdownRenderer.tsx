@@ -7,10 +7,13 @@ interface MarkdownRendererProps {
 export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
   // Simple markdown parser for basic formatting
   const parseMarkdown = (text: string): React.ReactNode => {
-    const lines = text.split("\n");
+    // First, collapse multiple consecutive blank lines into single blank lines
+    const normalizedText = text.replace(/\n{3,}/g, "\n\n");
+    const lines = normalizedText.split("\n");
     const elements: React.ReactNode[] = [];
     let currentList: string[] = [];
     let inList = false;
+    let consecutiveBlanks = 0;
 
     const flushList = () => {
       if (currentList.length > 0) {
@@ -31,15 +34,34 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
     lines.forEach((line, index) => {
       const trimmed = line.trim();
 
+      // Check for headers that start with * followed by text and end with ** or :
+      // Examples: "*Factors to Consider:**", "*Conclusion:**"
+      const headerMatch = trimmed.match(/^\*([^*:]+)[:*]+\s*$/);
+      if (headerMatch) {
+        if (inList) {
+          flushList();
+        }
+        consecutiveBlanks = 0;
+        const headerText = headerMatch[1].trim();
+        elements.push(
+          <h3 key={`h3-${index}`} className="text-base font-semibold mt-4 mb-2">
+            {parseInlineMarkdown(headerText)}
+          </h3>
+        );
+        return;
+      }
+
       // Check for bullet points (starts with *, -, or •, with optional spaces)
+      // But not if it looks like a header (ends with ** or :)
       // Matches: "* text", "*   text", "- text", etc.
-      if (/^[\*\-\•]\s+/.test(trimmed) || /^[\*\-\•]/.test(trimmed)) {
+      if (/^[\*\-\•]\s+/.test(trimmed) && !trimmed.match(/[:*]+\s*$/)) {
         if (!inList) {
           flushList();
           inList = true;
         }
+        consecutiveBlanks = 0;
         // Remove the bullet marker and any leading spaces
-        const listItem = trimmed.replace(/^[\*\-\•]\s*/, "").trim();
+        const listItem = trimmed.replace(/^[\*\-\•]\s+/, "").trim();
         if (listItem) {
           currentList.push(listItem);
         }
@@ -47,13 +69,14 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
       }
 
       // Check for numbered lists (1. text, 2. text, etc.)
-      if (/^\d+\.\s+/.test(trimmed) || /^\d+\./.test(trimmed)) {
+      if (/^\d+\.\s+/.test(trimmed)) {
         if (!inList) {
           flushList();
           inList = true;
         }
+        consecutiveBlanks = 0;
         // Remove the number and period, and any leading spaces
-        const listItem = trimmed.replace(/^\d+\.\s*/, "").trim();
+        const listItem = trimmed.replace(/^\d+\.\s+/, "").trim();
         if (listItem) {
           currentList.push(listItem);
         }
@@ -65,11 +88,16 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
         flushList();
       }
 
-      // Empty line
+      // Empty line - only add one break, collapse multiple blanks
       if (trimmed === "") {
-        elements.push(<br key={`br-${index}`} />);
+        consecutiveBlanks++;
+        if (consecutiveBlanks === 1) {
+          elements.push(<br key={`br-${index}`} />);
+        }
         return;
       }
+
+      consecutiveBlanks = 0;
 
       // Headers
       if (trimmed.startsWith("### ")) {
@@ -99,7 +127,7 @@ export default function MarkdownRenderer({ content }: MarkdownRendererProps) {
 
       // Regular paragraph
       elements.push(
-        <p key={`p-${index}`} className="my-2">
+        <p key={`p-${index}`} className="mb-2 last:mb-0">
           {parseInlineMarkdown(trimmed)}
         </p>
       );

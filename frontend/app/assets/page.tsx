@@ -44,6 +44,8 @@ export default function AssetsPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("stocks");
   const [editingStockId, setEditingStockId] = useState<string | null>(null);
   const [editingBankAccountId, setEditingBankAccountId] = useState<string | null>(null);
+  const [editingMutualFundId, setEditingMutualFundId] = useState<string | null>(null);
+  const [editingFixedDepositId, setEditingFixedDepositId] = useState<string | null>(null);
   
   // Separate net worth for each market
   const [netWorth, setNetWorth] = useState<Record<Market, number>>({
@@ -78,6 +80,36 @@ export default function AssetsPage() {
     europe: [],
   });
   
+  // Store mutual funds by market
+  const [mutualFunds, setMutualFunds] = useState<Record<Market, Array<{
+    id: string;
+    dbId?: string; // Database ID for persistence
+    fundName: string;
+    nav: number; // Net Asset Value
+    units: number; // Number of units purchased
+    totalInvested: number; // NAV * Units
+    currentWorth: number; // Current NAV * Units (for now same as invested, can be updated later)
+  }>>>({
+    india: [],
+    europe: [],
+  });
+  
+  // Store fixed deposits by market
+  const [fixedDeposits, setFixedDeposits] = useState<Record<Market, Array<{
+    id: string;
+    dbId?: string; // Database ID for persistence
+    bankName: string;
+    amountInvested: number; // Principal amount
+    rateOfInterest: number; // Annual interest rate in percentage
+    duration: number; // Duration in months
+    maturityAmount: number; // Calculated amount at maturity
+    startDate: string; // Start date of FD
+    maturityDate: string; // Calculated maturity date
+  }>>>({
+    india: [],
+    europe: [],
+  });
+  
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
   
   // Stock-specific fields
@@ -91,6 +123,19 @@ export default function AssetsPage() {
   const [accountNumber, setAccountNumber] = useState("");
   const [bankBalance, setBankBalance] = useState("");
   
+  // Mutual Fund-specific fields
+  const [fundName, setFundName] = useState("");
+  const [nav, setNav] = useState("");
+  const [units, setUnits] = useState("");
+  const [stockCurrentWorth, setStockCurrentWorth] = useState(""); // For editing stock current value
+  const [mutualFundCurrentWorth, setMutualFundCurrentWorth] = useState(""); // For editing mutual fund current value
+  
+  // Fixed Deposit-specific fields
+  const [fdBankName, setFdBankName] = useState("");
+  const [fdAmount, setFdAmount] = useState("");
+  const [fdRate, setFdRate] = useState("");
+  const [fdDuration, setFdDuration] = useState(""); // Duration in months
+  
   const currentMarket = marketConfig[selectedMarket];
   const currentNetWorth = netWorth[selectedMarket];
   
@@ -101,17 +146,47 @@ export default function AssetsPage() {
     return price * quantity;
   };
   
+  // Calculate maturity amount for fixed deposit (compound interest)
+  // Fixed deposits compound annually
+  const calculateMaturityAmount = (principal: number, rate: number, durationMonths: number): number => {
+    if (principal <= 0 || rate <= 0 || durationMonths <= 0) {
+      return 0;
+    }
+    // Convert annual rate to decimal (divide by 100)
+    const annualRate = rate / 100;
+    // Calculate number of years
+    const years = durationMonths / 12;
+    // Calculate compound interest: A = P(1 + r)^n
+    // For annual compounding: A = P(1 + annualRate)^years
+    const maturityAmount = principal * Math.pow(1 + annualRate, years);
+    return maturityAmount;
+  };
+  
   // Recalculate net worth from all assets for a given market
   const recalculateNetWorth = (market: Market) => {
     const marketStocks = stocks[market];
     const marketBankAccounts = bankAccounts[market];
+    const marketMutualFunds = mutualFunds[market];
+    const marketFixedDeposits = fixedDeposits[market];
     
     // Use actualWorth (current market value) for stocks, not totalInvested
     const stocksTotal = marketStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
     const bankAccountsTotal = marketBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+    const mutualFundsTotal = marketMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+    // For fixed deposits, use amount invested (not maturity amount) - this is an exception
+    const fixedDepositsTotal = marketFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
     
-    return stocksTotal + bankAccountsTotal;
+    return stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
   };
+  
+  // Calculate total amount invested for mutual funds
+  const calculateMutualFundTotal = () => {
+    const navValue = parseFloat(nav) || 0;
+    const unitsValue = parseFloat(units) || 0;
+    return navValue * unitsValue;
+  };
+  
+  const mutualFundTotal = calculateMutualFundTotal();
   
   const stockTotal = calculateStockTotal();
   
@@ -142,6 +217,10 @@ export default function AssetsPage() {
           const europeStocks: typeof stocks.europe = [];
           const indiaBankAccounts: typeof bankAccounts.india = [];
           const europeBankAccounts: typeof bankAccounts.europe = [];
+          const indiaMutualFunds: typeof mutualFunds.india = [];
+          const europeMutualFunds: typeof mutualFunds.europe = [];
+          const indiaFixedDeposits: typeof fixedDeposits.india = [];
+          const europeFixedDeposits: typeof fixedDeposits.europe = [];
           
           assets.forEach((asset: any) => {
             const currency = asset.currency || "USD";
@@ -185,6 +264,53 @@ export default function AssetsPage() {
               } else {
                 europeBankAccounts.push(bankAccount);
               }
+            } else if (asset.type === "mutual_fund") {
+              const navValue = parseFloat(asset.nav || "0");
+              const unitsValue = parseFloat(asset.units || "0");
+              const totalInvested = navValue * unitsValue;
+              const currentWorth = navValue * unitsValue; // For now, same as invested (can update with current NAV later)
+              
+              const mutualFund = {
+                id: asset.id,
+                dbId: asset.id,
+                fundName: asset.name,
+                nav: navValue,
+                units: unitsValue,
+                totalInvested: totalInvested,
+                currentWorth: currentWorth,
+              };
+              
+              if (market === "india") {
+                indiaMutualFunds.push(mutualFund);
+              } else {
+                europeMutualFunds.push(mutualFund);
+              }
+            } else if (asset.type === "fixed_deposit") {
+              const principalAmount = parseFloat(asset.principal_amount || "0");
+              const interestRate = parseFloat(asset.fd_interest_rate || "0");
+              // Calculate duration from start_date and maturity_date
+              const startDate = asset.start_date ? new Date(asset.start_date) : new Date();
+              const maturityDate = asset.maturity_date ? new Date(asset.maturity_date) : new Date();
+              const durationMonths = Math.round((maturityDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24 * 30));
+              const maturityAmount = calculateMaturityAmount(principalAmount, interestRate, durationMonths);
+              
+              const fixedDeposit = {
+                id: asset.id,
+                dbId: asset.id,
+                bankName: asset.name,
+                amountInvested: principalAmount,
+                rateOfInterest: interestRate,
+                duration: durationMonths,
+                maturityAmount: maturityAmount,
+                startDate: asset.start_date || new Date().toISOString().split('T')[0],
+                maturityDate: asset.maturity_date || new Date().toISOString().split('T')[0],
+              };
+              
+              if (market === "india") {
+                indiaFixedDeposits.push(fixedDeposit);
+              } else {
+                europeFixedDeposits.push(fixedDeposit);
+              }
             }
           });
           
@@ -198,11 +324,25 @@ export default function AssetsPage() {
             europe: europeBankAccounts,
           });
           
+          setMutualFunds({
+            india: indiaMutualFunds,
+            europe: europeMutualFunds,
+          });
+          
+          setFixedDeposits({
+            india: indiaFixedDeposits,
+            europe: europeFixedDeposits,
+          });
+          
           // Recalculate net worth (using actualWorth for stocks, not totalInvested)
           const indiaNetWorth = indiaStocks.reduce((sum, s) => sum + s.actualWorth, 0) +
-                               indiaBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                               indiaBankAccounts.reduce((sum, a) => sum + a.balance, 0) +
+                               indiaMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0) +
+                               indiaFixedDeposits.reduce((sum, fd) => sum + fd.maturityAmount, 0);
           const europeNetWorth = europeStocks.reduce((sum, s) => sum + s.actualWorth, 0) +
-                                europeBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                europeBankAccounts.reduce((sum, a) => sum + a.balance, 0) +
+                                europeMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0) +
+                                europeFixedDeposits.reduce((sum, fd) => sum + fd.maturityAmount, 0);
           
           setNetWorth({
             india: indiaNetWorth,
@@ -275,9 +415,11 @@ export default function AssetsPage() {
 
               // Recalculate net worth
               const indiaNetWorth = updatedStocks.india.reduce((sum, s) => sum + s.actualWorth, 0) +
-                                   bankAccounts.india.reduce((sum, a) => sum + a.balance, 0);
+                                   bankAccounts.india.reduce((sum, a) => sum + a.balance, 0) +
+                                   mutualFunds.india.reduce((sum, f) => sum + f.currentWorth, 0);
               const europeNetWorth = updatedStocks.europe.reduce((sum, s) => sum + s.actualWorth, 0) +
-                                    bankAccounts.europe.reduce((sum, a) => sum + a.balance, 0);
+                                    bankAccounts.europe.reduce((sum, a) => sum + a.balance, 0) +
+                                    mutualFunds.europe.reduce((sum, f) => sum + f.currentWorth, 0);
 
               setNetWorth({
                 india: indiaNetWorth,
@@ -319,6 +461,8 @@ export default function AssetsPage() {
       if (!accessToken) return;
 
       const currency = marketConfig[market].currency;
+      // Calculate current price from actualWorth (current value) and quantity
+      const currentPrice = stock.quantity > 0 ? (stock.actualWorth / stock.quantity) : stock.price;
       const assetData = {
         name: stock.name,
         type: "stock",
@@ -326,8 +470,8 @@ export default function AssetsPage() {
         stock_symbol: stockSymbol || stock.name.substring(0, 20), // Use selected symbol or fallback
         quantity: stock.quantity.toString(),
         purchase_price: stock.price.toString(),
-        current_price: stock.price.toString(),
-        current_value: stock.totalInvested.toString(),
+        current_price: currentPrice.toString(), // Use calculated current price from actualWorth
+        current_value: stock.actualWorth.toString(), // Use the manually set current value
         purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
       };
 
@@ -361,6 +505,148 @@ export default function AssetsPage() {
       }
     } catch (error) {
       console.error("Error saving stock to database:", error);
+      return null;
+    }
+  };
+
+  // Delete asset from database
+  const deleteAssetFromDatabase = async (assetId: string) => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return false;
+
+      const response = await fetch(`/api/assets/${assetId}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error("Error deleting asset from database:", error);
+      return false;
+    }
+  };
+
+  // Save fixed deposit to database
+  const saveFixedDepositToDatabase = async (fd: {
+    id: string;
+    dbId?: string;
+    bankName: string;
+    amountInvested: number;
+    rateOfInterest: number;
+    duration: number;
+    maturityAmount: number;
+    startDate: string;
+    maturityDate: string;
+  }, market: Market) => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return;
+
+      const currency = marketConfig[market].currency;
+      const assetData = {
+        name: fd.bankName,
+        type: "fixed_deposit",
+        currency: currency,
+        principal_amount: fd.amountInvested.toString(),
+        fd_interest_rate: fd.rateOfInterest.toString(),
+        start_date: fd.startDate,
+        maturity_date: fd.maturityDate,
+        current_value: fd.maturityAmount.toString(), // Use maturity amount as current value
+      };
+
+      if (fd.dbId) {
+        // Update existing asset
+        const response = await fetch(`/api/assets/${fd.dbId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+        return response.ok;
+      } else {
+        // Create new asset
+        const response = await fetch("/api/assets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+        
+        if (response.ok) {
+          const createdAsset = await response.json();
+          return createdAsset.id;
+        }
+        return null;
+      }
+    } catch (error) {
+      console.error("Error saving fixed deposit to database:", error);
+      return null;
+    }
+  };
+
+  // Save mutual fund to database
+  const saveMutualFundToDatabase = async (fund: {
+    id: string;
+    dbId?: string;
+    fundName: string;
+    nav: number;
+    units: number;
+    totalInvested: number;
+    currentWorth: number;
+  }, market: Market) => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return;
+
+      const currency = marketConfig[market].currency;
+      const assetData = {
+        name: fund.fundName,
+        type: "mutual_fund",
+        currency: currency,
+        nav: fund.nav.toString(),
+        units: fund.units.toString(),
+        current_value: fund.currentWorth.toString(), // Use the manually set current value
+        nav_purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
+      };
+
+      if (fund.dbId) {
+        // Update existing asset
+        const response = await fetch(`/api/assets/${fund.dbId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+        return response.ok;
+      } else {
+        // Create new asset
+        const response = await fetch("/api/assets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+        
+        if (response.ok) {
+          const createdAsset = await response.json();
+          return createdAsset.id;
+        }
+        return null;
+      }
+    } catch (error) {
+      console.error("Error saving mutual fund to database:", error);
       return null;
     }
   };
@@ -608,34 +894,90 @@ export default function AssetsPage() {
                                         <span>Qty: {stock.quantity}</span>
                                       </div>
                                     </div>
-                                    <button
-                                      onClick={() => {
-                                        setEditingStockId(stock.id);
-                                        setSelectedAssetType("stock");
-                                        setStockName(stock.name);
-                                        // Stock name already set above
-                                        setStockSymbol(stock.symbol || ""); // Load existing symbol
-                                        setStockPrice(stock.price.toString());
-                                        setStockQuantity(stock.quantity.toString());
-                                        setIsAddAssetModalOpen(true);
-                                      }}
-                                      className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                      title="Edit stock"
-                                    >
-                                      <svg
-                                        className="h-4 w-4"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
+                                    <div className="flex items-center space-x-1">
+                                      <button
+                                        onClick={() => {
+                                          setEditingStockId(stock.id);
+                                          setSelectedAssetType("stock");
+                                          setStockName(stock.name);
+                                          // Stock name already set above
+                                          setStockSymbol(stock.symbol || ""); // Load existing symbol
+                                          setStockPrice(stock.price.toString());
+                                          setStockQuantity(stock.quantity.toString());
+                                          setStockCurrentWorth(stock.actualWorth.toString()); // Load current worth
+                                          setIsAddAssetModalOpen(true);
+                                        }}
+                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                        title="Edit stock"
                                       >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth={2}
-                                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                        />
-                                      </svg>
-                                    </button>
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          if (window.confirm(`Are you sure you want to delete ${stock.name}? This action cannot be undone.`)) {
+                                            const dbId = stock.dbId || stock.id;
+                                            const deleted = await deleteAssetFromDatabase(dbId);
+                                            
+                                            if (deleted) {
+                                              // Remove from state
+                                              setStocks((prev) => {
+                                                const updatedStocks = prev[selectedMarket].filter(s => s.id !== stock.id);
+                                                
+                                                // Recalculate net worth
+                                                const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                
+                                                setNetWorth((prev) => ({
+                                                  ...prev,
+                                                  [selectedMarket]: newNetWorth,
+                                                }));
+                                                
+                                                return {
+                                                  ...prev,
+                                                  [selectedMarket]: updatedStocks,
+                                                };
+                                              });
+                                            } else {
+                                              alert("Failed to delete stock. Please try again.");
+                                            }
+                                          }
+                                        }}
+                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                        title="Delete stock"
+                                      >
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </div>
                                   </div>
                                   <div className="flex items-center justify-between pt-3 border-t border-gray-200">
                                     <div>
@@ -731,32 +1073,87 @@ export default function AssetsPage() {
                                         </p>
                                       )}
                                     </div>
-                                    <button
-                                      onClick={() => {
-                                        setEditingBankAccountId(account.id);
-                                        setSelectedAssetType("bank_account");
-                                        setBankName(account.bankName);
-                                        setAccountNumber(account.accountNumber || "");
-                                        setBankBalance(account.balance.toString());
-                                        setIsAddAssetModalOpen(true);
-                                      }}
-                                      className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                      title="Edit bank account"
-                                    >
-                                      <svg
-                                        className="h-4 w-4"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
+                                    <div className="flex items-center space-x-1">
+                                      <button
+                                        onClick={() => {
+                                          setEditingBankAccountId(account.id);
+                                          setSelectedAssetType("bank_account");
+                                          setBankName(account.bankName);
+                                          setAccountNumber(account.accountNumber || "");
+                                          setBankBalance(account.balance.toString());
+                                          setIsAddAssetModalOpen(true);
+                                        }}
+                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                        title="Edit bank account"
                                       >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth={2}
-                                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                        />
-                                      </svg>
-                                    </button>
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          if (window.confirm(`Are you sure you want to delete ${account.bankName}? This action cannot be undone.`)) {
+                                            const dbId = account.dbId || account.id;
+                                            const deleted = await deleteAssetFromDatabase(dbId);
+                                            
+                                            if (deleted) {
+                                              // Remove from state
+                                              setBankAccounts((prev) => {
+                                                const updatedAccounts = prev[selectedMarket].filter(a => a.id !== account.id);
+                                                
+                                                // Recalculate net worth
+                                                const updatedStocks = stocks[selectedMarket];
+                                                const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                const bankAccountsTotal = updatedAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                
+                                                setNetWorth((prev) => ({
+                                                  ...prev,
+                                                  [selectedMarket]: newNetWorth,
+                                                }));
+                                                
+                                                return {
+                                                  ...prev,
+                                                  [selectedMarket]: updatedAccounts,
+                                                };
+                                              });
+                                            } else {
+                                              alert("Failed to delete bank account. Please try again.");
+                                            }
+                                          }
+                                        }}
+                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                        title="Delete bank account"
+                                      >
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </div>
                                   </div>
                                   <div className="flex items-center justify-between pt-3 border-t border-gray-200">
                                     <div>
@@ -782,56 +1179,374 @@ export default function AssetsPage() {
                     )}
 
                     {activeTab === "mutual_funds" && (
-                      <div className="text-center py-12">
-                        <svg
-                          className="mx-auto h-12 w-12 text-gray-400 mb-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                          />
-                        </svg>
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">No Mutual Funds Added</h3>
-                        <p className="text-gray-500 mb-4">
-                          Manage your mutual fund investments and track performance
-                        </p>
-                        <button
-                          onClick={() => {
-                            setSelectedAssetType("mutual_fund");
-                            setIsAddAssetModalOpen(true);
-                          }}
-                          className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                        >
-                          Add Mutual Fund
-                        </button>
+                      <div>
+                        {mutualFunds[selectedMarket].length === 0 ? (
+                          <div className="text-center py-12">
+                            <svg
+                              className="mx-auto h-12 w-12 text-gray-400 mb-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+                              />
+                            </svg>
+                            <h3 className="text-lg font-medium text-gray-900 mb-2">No Mutual Funds Added</h3>
+                            <p className="text-gray-500 mb-4">
+                              Manage your mutual fund investments and track performance
+                            </p>
+                            <button
+                              onClick={() => {
+                                setSelectedAssetType("mutual_fund");
+                                setIsAddAssetModalOpen(true);
+                              }}
+                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                            >
+                              Add Mutual Fund
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-sm font-medium text-gray-700">
+                                {mutualFunds[selectedMarket].length} {mutualFunds[selectedMarket].length === 1 ? "Mutual Fund" : "Mutual Funds"}
+                              </h3>
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("mutual_fund");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                + Add Mutual Fund
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {mutualFunds[selectedMarket].map((fund) => (
+                                <div
+                                  key={fund.id}
+                                  className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between mb-3">
+                                    <div className="flex-1">
+                                      <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                                        {fund.fundName}
+                                      </h4>
+                                      <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                        <span>
+                                          NAV: {currentMarket.symbol}
+                                          {fund.nav.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </span>
+                                        <span>Units: {fund.units.toLocaleString("en-IN", {
+                                          minimumFractionDigits: 2,
+                                          maximumFractionDigits: 2,
+                                        })}</span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      <button
+                                        onClick={() => {
+                                          setEditingMutualFundId(fund.id);
+                                          setSelectedAssetType("mutual_fund");
+                                          setFundName(fund.fundName);
+                                          setNav(fund.nav.toString());
+                                          setUnits(fund.units.toString());
+                                          setMutualFundCurrentWorth(fund.currentWorth.toString()); // Load current worth
+                                          setIsAddAssetModalOpen(true);
+                                        }}
+                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                        title="Edit mutual fund"
+                                      >
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                          />
+                                        </svg>
+                                      </button>
+                                      <button
+                                        onClick={async () => {
+                                          if (window.confirm(`Are you sure you want to delete ${fund.fundName}? This action cannot be undone.`)) {
+                                            const dbId = fund.dbId || fund.id;
+                                            const deleted = await deleteAssetFromDatabase(dbId);
+                                            
+                                            if (deleted) {
+                                              // Remove from state
+                                              setMutualFunds((prev) => {
+                                                const updatedFunds = prev[selectedMarket].filter(f => f.id !== fund.id);
+                                                
+                                                // Recalculate net worth
+                                                const updatedStocks = stocks[selectedMarket];
+                                                const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                const mutualFundsTotal = updatedFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                
+                                                setNetWorth((prev) => ({
+                                                  ...prev,
+                                                  [selectedMarket]: newNetWorth,
+                                                }));
+                                                
+                                                return {
+                                                  ...prev,
+                                                  [selectedMarket]: updatedFunds,
+                                                };
+                                              });
+                                            } else {
+                                              alert("Failed to delete mutual fund. Please try again.");
+                                            }
+                                          }
+                                        }}
+                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                        title="Delete mutual fund"
+                                      >
+                                        <svg
+                                          className="h-4 w-4"
+                                          fill="none"
+                                          viewBox="0 0 24 24"
+                                          stroke="currentColor"
+                                        >
+                                          <path
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            strokeWidth={2}
+                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                    <div>
+                                      <p className="text-xs text-gray-500 mb-1">Total Amount Invested</p>
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {currentMarket.symbol}
+                                        {fund.totalInvested.toLocaleString("en-IN", {
+                                          minimumFractionDigits: 2,
+                                          maximumFractionDigits: 2,
+                                        })}
+                                      </p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="text-xs text-gray-500 mb-1">Current Worth</p>
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {currentMarket.symbol}
+                                        {fund.currentWorth.toLocaleString("en-IN", {
+                                          minimumFractionDigits: 2,
+                                          maximumFractionDigits: 2,
+                                        })}
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
                     {activeTab === "fixed_deposits" && (
-                      <div className="text-center py-12">
-                        <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
-                          <span className="text-3xl font-semibold text-gray-600">
-                            {currentMarket.symbol}
-                          </span>
-                        </div>
-                        <h3 className="text-lg font-medium text-gray-900 mb-2">No Fixed Deposits Added</h3>
-                        <p className="text-gray-500 mb-4">
-                          Track your fixed deposit investments and maturity dates
-                        </p>
-                        <button
-                          onClick={() => {
-                            setSelectedAssetType("fixed_deposit");
-                            setIsAddAssetModalOpen(true);
-                          }}
-                          className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                        >
-                          Add Fixed Deposit
-                        </button>
+                      <div>
+                        {fixedDeposits[selectedMarket].length === 0 ? (
+                          <div className="text-center py-12">
+                            <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
+                              <span className="text-3xl font-semibold text-gray-600">
+                                {currentMarket.symbol}
+                              </span>
+                            </div>
+                            <h3 className="text-lg font-medium text-gray-900 mb-2">No Fixed Deposits Added</h3>
+                            <p className="text-gray-500 mb-4">
+                              Track your fixed deposit investments and maturity dates
+                            </p>
+                            <button
+                              onClick={() => {
+                                setSelectedAssetType("fixed_deposit");
+                                setIsAddAssetModalOpen(true);
+                              }}
+                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                            >
+                              Add Fixed Deposit
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-sm font-medium text-gray-700">
+                                {fixedDeposits[selectedMarket].length} {fixedDeposits[selectedMarket].length === 1 ? "Fixed Deposit" : "Fixed Deposits"}
+                              </h3>
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("fixed_deposit");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                + Add Fixed Deposit
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {fixedDeposits[selectedMarket].map((fd) => {
+                                const maturityDate = new Date(fd.maturityDate);
+                                const isMatured = maturityDate < new Date();
+                                
+                                return (
+                                  <div
+                                    key={fd.id}
+                                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
+                                  >
+                                    <div className="flex items-start justify-between mb-3">
+                                      <div className="flex-1">
+                                        <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                                          {fd.bankName}
+                                        </h4>
+                                        <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                          <span>
+                                            Amount: {currentMarket.symbol}
+                                            {fd.amountInvested.toLocaleString("en-IN", {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2,
+                                            })}
+                                          </span>
+                                          <span>Rate: {fd.rateOfInterest}% p.a.</span>
+                                          <span>Duration: {fd.duration} months</span>
+                                        </div>
+                                        <div className="mt-2 text-xs text-gray-500">
+                                          <span>Start: {new Date(fd.startDate).toLocaleDateString()}</span>
+                                          <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                          {isMatured && (
+                                            <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center space-x-1">
+                                        <button
+                                          onClick={() => {
+                                            setEditingFixedDepositId(fd.id);
+                                            setSelectedAssetType("fixed_deposit");
+                                            setFdBankName(fd.bankName);
+                                            setFdAmount(fd.amountInvested.toString());
+                                            setFdRate(fd.rateOfInterest.toString());
+                                            setFdDuration(fd.duration.toString());
+                                            setIsAddAssetModalOpen(true);
+                                          }}
+                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                          title="Edit fixed deposit"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                            />
+                                          </svg>
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            if (window.confirm(`Are you sure you want to delete ${fd.bankName} fixed deposit? This action cannot be undone.`)) {
+                                              const dbId = fd.dbId || fd.id;
+                                              const deleted = await deleteAssetFromDatabase(dbId);
+                                              
+                                              if (deleted) {
+                                                // Remove from state
+                                                setFixedDeposits((prev) => {
+                                                  const updatedFDs = prev[selectedMarket].filter(f => f.id !== fd.id);
+                                                  
+                                                  // Recalculate net worth
+                                                  const updatedStocks = stocks[selectedMarket];
+                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                  const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                  
+                                                  setNetWorth((prev) => ({
+                                                    ...prev,
+                                                    [selectedMarket]: newNetWorth,
+                                                  }));
+                                                  
+                                                  return {
+                                                    ...prev,
+                                                    [selectedMarket]: updatedFDs,
+                                                  };
+                                                });
+                                              } else {
+                                                alert("Failed to delete fixed deposit. Please try again.");
+                                              }
+                                            }
+                                          }}
+                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                          title="Delete fixed deposit"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                            />
+                                          </svg>
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                      <div>
+                                        <p className="text-xs text-gray-500 mb-1">Amount Invested</p>
+                                        <p className="text-sm font-semibold text-gray-900">
+                                          {currentMarket.symbol}
+                                          {fd.amountInvested.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </p>
+                                      </div>
+                                      <div className="text-right">
+                                        <p className="text-xs text-gray-500 mb-1">Amount at Maturity</p>
+                                        <p className="text-sm font-semibold text-gray-900">
+                                          {currentMarket.symbol}
+                                          {fd.maturityAmount.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -862,7 +1577,7 @@ export default function AssetsPage() {
               {/* Header */}
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {editingStockId || editingBankAccountId ? "Edit Asset" : "Add New Asset"}
+                  {editingStockId || editingBankAccountId || editingMutualFundId || editingFixedDepositId ? "Edit Asset" : "Add New Asset"}
                 </h2>
                 <button
                   onClick={() => setIsAddAssetModalOpen(false)}
@@ -914,9 +1629,13 @@ export default function AssetsPage() {
                           
                           // Calculate new net worth with updated accounts
                           const updatedStocks = stocks[selectedMarket];
+                          const updatedMutualFunds = mutualFunds[selectedMarket];
                           const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
                           const bankAccountsTotal = updatedAccounts.reduce((sum, account) => sum + account.balance, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal;
+                          const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                          const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -954,9 +1673,13 @@ export default function AssetsPage() {
                         
                         // Calculate new net worth with updated accounts
                         const updatedStocks = stocks[selectedMarket];
-                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.totalInvested, 0);
+                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
                         const bankAccountsTotal = updatedAccounts.reduce((sum, account) => sum + account.balance, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal;
+                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -976,6 +1699,7 @@ export default function AssetsPage() {
                     
                     if (editingStockId) {
                       // Update existing stock
+                      const currentWorth = parseFloat(stockCurrentWorth) || totalInvested; // Use manually entered value or fallback to calculated
                       setStocks((prev) => {
                         const marketStocks = prev[selectedMarket];
                         const stockIndex = marketStocks.findIndex(s => s.id === editingStockId);
@@ -990,7 +1714,7 @@ export default function AssetsPage() {
                             price: price,
                             quantity: quantity,
                             totalInvested: totalInvested,
-                            actualWorth: totalInvested, // Will be updated by price update service
+                            actualWorth: currentWorth, // Use manually entered current value
                           };
                           
                           // Save to database (async, but don't wait)
@@ -998,9 +1722,13 @@ export default function AssetsPage() {
                           
                           // Calculate new net worth with updated stocks
                           const updatedBankAccounts = bankAccounts[selectedMarket];
+                          const updatedMutualFunds = mutualFunds[selectedMarket];
                           const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
                           const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal;
+                          const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                          const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -1080,9 +1808,13 @@ export default function AssetsPage() {
                       setStocks((prev) => {
                         // Calculate new net worth with updated stocks
                         const updatedBankAccounts = bankAccounts[selectedMarket];
-                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.totalInvested, 0);
+                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
                         const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal;
+                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -1095,6 +1827,203 @@ export default function AssetsPage() {
                         };
                       });
                     }
+                  } else if (selectedAssetType === "mutual_fund") {
+                    const totalInvested = calculateMutualFundTotal();
+                    const navValue = parseFloat(nav) || 0;
+                    const unitsValue = parseFloat(units) || 0;
+                    
+                    if (editingMutualFundId) {
+                      // Update existing mutual fund
+                      const currentWorth = parseFloat(mutualFundCurrentWorth) || totalInvested; // Use manually entered value or fallback to calculated
+                      setMutualFunds((prev) => {
+                        const marketFunds = prev[selectedMarket];
+                        const fundIndex = marketFunds.findIndex(f => f.id === editingMutualFundId);
+                        
+                        if (fundIndex >= 0) {
+                          // Update the fund
+                          const updatedFunds = [...marketFunds];
+                          updatedFunds[fundIndex] = {
+                            ...marketFunds[fundIndex],
+                            fundName: fundName,
+                            nav: navValue,
+                            units: unitsValue,
+                            totalInvested: totalInvested,
+                            currentWorth: currentWorth, // Use manually entered current value
+                          };
+                          
+                          // Save to database (async, but don't wait)
+                          saveMutualFundToDatabase(updatedFunds[fundIndex], selectedMarket).catch(console.error);
+                          
+                          // Calculate new net worth with updated funds
+                          const updatedStocks = stocks[selectedMarket];
+                          const updatedBankAccounts = bankAccounts[selectedMarket];
+                          const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                          const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                          const mutualFundsTotal = updatedFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                          const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          
+                          setNetWorth((prev) => ({
+                            ...prev,
+                            [selectedMarket]: newNetWorth,
+                          }));
+                          
+                          return {
+                            ...prev,
+                            [selectedMarket]: updatedFunds,
+                          };
+                        }
+                        return prev;
+                      });
+                      
+                      setEditingMutualFundId(null);
+                    } else {
+                      // Add new mutual fund
+                      const tempId = `mutual-fund-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                      const newMutualFund: typeof mutualFunds.india[0] = {
+                        id: tempId,
+                        fundName: fundName,
+                        nav: navValue,
+                        units: unitsValue,
+                        totalInvested: totalInvested,
+                        currentWorth: totalInvested, // For now, same as invested
+                      };
+                      
+                      // Save to database
+                      const dbId = await saveMutualFundToDatabase(newMutualFund, selectedMarket);
+                      if (dbId && typeof dbId === 'string') {
+                        newMutualFund.dbId = dbId;
+                        newMutualFund.id = dbId; // Use database ID as the main ID
+                      }
+                      
+                      setMutualFunds((prev) => {
+                        const updatedFunds = [...prev[selectedMarket], newMutualFund];
+                        
+                        // Calculate new net worth with updated funds
+                        const updatedStocks = stocks[selectedMarket];
+                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                        const mutualFundsTotal = updatedFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        
+                        setNetWorth((prev) => ({
+                          ...prev,
+                          [selectedMarket]: newNetWorth,
+                        }));
+                        
+                        return {
+                          ...prev,
+                          [selectedMarket]: updatedFunds,
+                        };
+                      });
+                    }
+                  } else if (selectedAssetType === "fixed_deposit") {
+                    const amountInvested = parseFloat(fdAmount) || 0;
+                    const rateOfInterest = parseFloat(fdRate) || 0;
+                    const duration = parseFloat(fdDuration) || 0;
+                    const maturityAmount = calculateMaturityAmount(amountInvested, rateOfInterest, duration);
+                    
+                    // Calculate dates
+                    const startDate = new Date();
+                    const maturityDate = new Date();
+                    maturityDate.setMonth(maturityDate.getMonth() + duration);
+                    
+                    if (editingFixedDepositId) {
+                      // Update existing fixed deposit
+                      setFixedDeposits((prev) => {
+                        const marketFDs = prev[selectedMarket];
+                        const fdIndex = marketFDs.findIndex(f => f.id === editingFixedDepositId);
+                        
+                        if (fdIndex >= 0) {
+                          // Update the fixed deposit
+                          const updatedFDs = [...marketFDs];
+                          updatedFDs[fdIndex] = {
+                            ...marketFDs[fdIndex],
+                            bankName: fdBankName,
+                            amountInvested: amountInvested,
+                            rateOfInterest: rateOfInterest,
+                            duration: duration,
+                            maturityAmount: maturityAmount,
+                            startDate: startDate.toISOString().split('T')[0],
+                            maturityDate: maturityDate.toISOString().split('T')[0],
+                          };
+                          
+                          // Save to database (async, but don't wait)
+                          saveFixedDepositToDatabase(updatedFDs[fdIndex], selectedMarket).catch(console.error);
+                          
+                          // Calculate new net worth with updated fixed deposits
+                          const updatedStocks = stocks[selectedMarket];
+                          const updatedBankAccounts = bankAccounts[selectedMarket];
+                          const updatedMutualFunds = mutualFunds[selectedMarket];
+                          const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                          const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                          const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          
+                          setNetWorth((prev) => ({
+                            ...prev,
+                            [selectedMarket]: newNetWorth,
+                          }));
+                          
+                          return {
+                            ...prev,
+                            [selectedMarket]: updatedFDs,
+                          };
+                        }
+                        return prev;
+                      });
+                      
+                      setEditingFixedDepositId(null);
+                    } else {
+                      // Add new fixed deposit
+                      const tempId = `fixed-deposit-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                      const newFixedDeposit: typeof fixedDeposits.india[0] = {
+                        id: tempId,
+                        bankName: fdBankName,
+                        amountInvested: amountInvested,
+                        rateOfInterest: rateOfInterest,
+                        duration: duration,
+                        maturityAmount: maturityAmount,
+                        startDate: startDate.toISOString().split('T')[0],
+                        maturityDate: maturityDate.toISOString().split('T')[0],
+                      };
+                      
+                      // Save to database
+                      const dbId = await saveFixedDepositToDatabase(newFixedDeposit, selectedMarket);
+                      if (dbId && typeof dbId === 'string') {
+                        newFixedDeposit.dbId = dbId;
+                        newFixedDeposit.id = dbId; // Use database ID as the main ID
+                      }
+                      
+                      setFixedDeposits((prev) => {
+                        const updatedFDs = [...prev[selectedMarket], newFixedDeposit];
+                        
+                        // Calculate new net worth with updated fixed deposits
+                        const updatedStocks = stocks[selectedMarket];
+                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        
+                        setNetWorth((prev) => ({
+                          ...prev,
+                          [selectedMarket]: newNetWorth,
+                        }));
+                        
+                        return {
+                          ...prev,
+                          [selectedMarket]: updatedFDs,
+                        };
+                      });
+                    }
                   }
                   
                   // Reset form
@@ -1103,11 +2032,22 @@ export default function AssetsPage() {
                   setStockSymbol("");
                   setStockPrice("");
                   setStockQuantity("");
+                  setStockCurrentWorth("");
                   setBankName("");
                   setAccountNumber("");
                   setBankBalance("");
+                  setFundName("");
+                  setNav("");
+                  setUnits("");
+                  setMutualFundCurrentWorth("");
+                  setFdBankName("");
+                  setFdAmount("");
+                  setFdRate("");
+                  setFdDuration("");
                   setEditingStockId(null);
                   setEditingBankAccountId(null);
+                  setEditingMutualFundId(null);
+                  setEditingFixedDepositId(null);
                   setIsAddAssetModalOpen(false);
                 }}
                 className="space-y-4"
@@ -1197,6 +2137,32 @@ export default function AssetsPage() {
                         </div>
                       </div>
                     )}
+                    
+                    {/* Current Value field (only shown when editing) */}
+                    {editingStockId && (
+                      <div>
+                        <label
+                          htmlFor="stock-current-worth"
+                          className="block text-sm font-medium text-gray-700 mb-2"
+                        >
+                          Current Value ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          id="stock-current-worth"
+                          value={stockCurrentWorth}
+                          onChange={(e) => setStockCurrentWorth(e.target.value)}
+                          step="0.01"
+                          min="0"
+                          required
+                          placeholder="Enter current market value"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">
+                          Manually set the current market value of this stock
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1260,6 +2226,224 @@ export default function AssetsPage() {
                   </div>
                 )}
 
+                {/* Mutual Fund-specific fields */}
+                {selectedAssetType === "mutual_fund" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="fund-name"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Fund Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="fund-name"
+                        value={fundName}
+                        onChange={(e) => setFundName(e.target.value)}
+                        required
+                        placeholder="e.g., HDFC Equity Fund, SBI Bluechip Fund"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="nav"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        NAV (Net Asset Value) ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="nav"
+                        value={nav}
+                        onChange={(e) => setNav(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter NAV"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="units"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Number of Units Purchased <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="units"
+                        value={units}
+                        onChange={(e) => setUnits(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter number of units"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    {/* Calculated Total */}
+                    {mutualFundTotal > 0 && (
+                      <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-gray-700">
+                            Total Amount Invested:
+                          </span>
+                          <span className="text-lg font-semibold text-gray-900">
+                            {currentMarket.symbol}
+                            {mutualFundTotal.toLocaleString("en-IN", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Current Value field (only shown when editing) */}
+                    {editingMutualFundId && (
+                      <div>
+                        <label
+                          htmlFor="mutual-fund-current-worth"
+                          className="block text-sm font-medium text-gray-700 mb-2"
+                        >
+                          Current Value ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          id="mutual-fund-current-worth"
+                          value={mutualFundCurrentWorth}
+                          onChange={(e) => setMutualFundCurrentWorth(e.target.value)}
+                          step="0.01"
+                          min="0"
+                          required
+                          placeholder="Enter current market value"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">
+                          Manually set the current market value of this mutual fund
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Fixed Deposit-specific fields */}
+                {selectedAssetType === "fixed_deposit" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="fd-bank-name"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Bank Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="fd-bank-name"
+                        value={fdBankName}
+                        onChange={(e) => setFdBankName(e.target.value)}
+                        required
+                        placeholder="e.g., State Bank of India, HDFC Bank"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="fd-amount"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Amount Invested ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="fd-amount"
+                        value={fdAmount}
+                        onChange={(e) => setFdAmount(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter amount invested"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="fd-rate"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Rate of Interest (% per annum) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="fd-rate"
+                        value={fdRate}
+                        onChange={(e) => setFdRate(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        max="100"
+                        required
+                        placeholder="Enter interest rate"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="fd-duration"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Duration (months) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="fd-duration"
+                        value={fdDuration}
+                        onChange={(e) => setFdDuration(e.target.value)}
+                        step="1"
+                        min="1"
+                        required
+                        placeholder="Enter duration in months"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    {/* Calculated Maturity Amount */}
+                    {(() => {
+                      const amount = parseFloat(fdAmount) || 0;
+                      const rate = parseFloat(fdRate) || 0;
+                      const duration = parseFloat(fdDuration) || 0;
+                      const maturityAmount = duration > 0 && amount > 0 && rate > 0 
+                        ? calculateMaturityAmount(amount, rate, duration)
+                        : 0;
+                      
+                      return maturityAmount > 0 ? (
+                        <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-gray-700">
+                              Amount at Maturity:
+                            </span>
+                            <span className="text-lg font-semibold text-gray-900">
+                              {currentMarket.symbol}
+                              {maturityAmount.toLocaleString("en-IN", {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
+                          </div>
+                        </div>
+                      ) : null;
+                    })()}
+                  </div>
+                )}
+
                 {/* Form Actions */}
                 <div className="flex items-center justify-end space-x-3 pt-4">
                   <button
@@ -1268,13 +2452,25 @@ export default function AssetsPage() {
                       setIsAddAssetModalOpen(false);
                       setSelectedAssetType("");
                       setStockName("");
+                      setStockSymbol("");
                       setStockPrice("");
                       setStockQuantity("");
+                      setStockCurrentWorth("");
                       setBankName("");
                       setAccountNumber("");
                       setBankBalance("");
+                      setFundName("");
+                      setNav("");
+                      setUnits("");
+                      setMutualFundCurrentWorth("");
+                      setFdBankName("");
+                      setFdAmount("");
+                      setFdRate("");
+                      setFdDuration("");
                       setEditingStockId(null);
                       setEditingBankAccountId(null);
+                      setEditingMutualFundId(null);
+                      setEditingFixedDepositId(null);
                     }}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
                   >

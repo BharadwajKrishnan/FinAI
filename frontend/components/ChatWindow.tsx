@@ -11,14 +11,7 @@ interface Message {
 }
 
 export default function ChatWindow() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      role: "assistant",
-      content: "Hello! I'm your finance assistant. I can help you manage your financial assets. How can I assist you today?",
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -33,15 +26,8 @@ export default function ChatWindow() {
   }, [messages]);
 
   const clearChat = () => {
-    // Reset to initial welcome message
-    setMessages([
-      {
-        id: "1",
-        role: "assistant",
-        content: "Hello! I'm your finance assistant. I can help you manage your financial assets. How can I assist you today?",
-        timestamp: new Date(),
-      },
-    ]);
+    // Clear all messages
+    setMessages([]);
     // Clear input field
     setInput("");
   };

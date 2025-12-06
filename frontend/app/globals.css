@@ -8,7 +8,7 @@
 }
 
 .markdown-content p {
-  @apply my-2;
+  @apply mb-2 last:mb-0;
 }
 
 .markdown-content ul {
