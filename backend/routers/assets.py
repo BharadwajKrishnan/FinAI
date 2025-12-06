@@ -222,13 +222,39 @@ async def delete_asset(asset_id: str, current_user=Depends(get_current_user)):
             user_id = str(current_user.id)
         else:
             raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
-        response = supabase.table("assets").delete().eq("id", asset_id).eq("user_id", user_id).execute()
-        if not response.data:
+        
+        print(f"Deleting asset {asset_id} for user {user_id}")
+        
+        # Use service role client for backend operations
+        # We've already validated the user via JWT and set user_id correctly
+        # Service role bypasses RLS, but we're enforcing security at the application level
+        try:
+            response = supabase_service.table("assets").delete().eq("id", asset_id).eq("user_id", user_id).execute()
+        except Exception as rls_error:
+            error_msg = str(rls_error)
+            if "row-level security" in error_msg.lower() or "42501" in error_msg:
+                # RLS is blocking - this means service role key is not set or not working
+                raise HTTPException(
+                    status_code=500,
+                    detail="RLS policy violation. Please set SUPABASE_SERVICE_ROLE_KEY in your .env file."
+                )
+            raise
+        
+        # Check if asset was actually deleted
+        # Supabase delete returns empty array if nothing was deleted
+        if response.data is None or len(response.data) == 0:
+            print(f"Asset {asset_id} not found or already deleted")
             raise HTTPException(status_code=404, detail="Asset not found")
+        
+        print(f"Successfully deleted asset {asset_id}")
         return {"message": "Asset deleted successfully"}
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error deleting asset: {str(e)}")
+        print(f"Traceback: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to delete asset: {str(e)}")
 
 

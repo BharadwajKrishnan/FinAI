@@ -524,8 +524,12 @@ export default function AssetsPage() {
   const deleteAssetFromDatabase = async (assetId: string) => {
     try {
       const accessToken = localStorage.getItem("access_token");
-      if (!accessToken) return false;
+      if (!accessToken) {
+        console.error("No access token found when deleting asset");
+        return false;
+      }
 
+      console.log(`Deleting asset with ID: ${assetId}`);
       const response = await fetch(`/api/assets/${assetId}`, {
         method: "DELETE",
         headers: {
@@ -534,7 +538,14 @@ export default function AssetsPage() {
         },
       });
 
-      return response.ok;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+        console.error(`Failed to delete asset: ${errorData.message || response.statusText}`, errorData);
+        return false;
+      }
+
+      console.log(`Successfully deleted asset: ${assetId}`);
+      return true;
     } catch (error) {
       console.error("Error deleting asset from database:", error);
       return false;
