@@ -5,8 +5,13 @@ Chat/LLM API endpoints
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional, Dict
+import json
+import time
+import random
+import uuid
 from auth import get_current_user
 from services.llm_service import llm_service
+from database.supabase_client import supabase
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -35,7 +40,135 @@ async def chat(
     Handle chat messages and return LLM response
     """
     try:
-        user_id = current_user.user.id if hasattr(current_user, 'user') else current_user.id
+        # Extract user_id safely (matching pattern from assets router)
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
+        
+        # Ensure user_id is a valid UUID string
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid user ID format")
+        
+        # Fetch user's portfolio from database
+        portfolio_data = {}
+        try:
+            print(f"Fetching portfolio for user_id: {user_id}")
+            # Fetch all assets (both active and inactive, but prefer active)
+            # First try with is_active filter
+            response = supabase.table("assets").select("*").eq("user_id", user_id).eq("is_active", True).order("created_at", desc=False).execute()
+            assets = response.data if response.data else []
+            
+            # If no active assets found, try without the filter (in case is_active is not set)
+            if len(assets) == 0:
+                print(f"No active assets found, trying without is_active filter...")
+                response = supabase.table("assets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
+                assets = response.data if response.data else []
+            
+            print(f"Found {len(assets)} assets for user {user_id}")
+            if len(assets) > 0:
+                print(f"Sample asset: {json.dumps(assets[0], indent=2, default=str)}")
+            
+            # Organize assets by market (currency) and then by type
+            portfolio_data = {
+                "india": {
+                    "currency": "INR",
+                    "stocks": [],
+                    "mutual_funds": [],
+                    "bank_accounts": [],
+                    "fixed_deposits": []
+                },
+                "europe": {
+                    "currency": "EUR",
+                    "stocks": [],
+                    "mutual_funds": [],
+                    "bank_accounts": [],
+                    "fixed_deposits": []
+                }
+            }
+            
+            for asset in assets:
+                currency = asset.get("currency", "USD")
+                # Determine market based on currency
+                market = "india" if currency == "INR" else "europe" if currency == "EUR" else "other"
+                
+                # Skip assets with other currencies (or add to a separate section if needed)
+                if market == "other":
+                    continue
+                
+                asset_info = {
+                    "id": asset.get("id"),
+                    "name": asset.get("name"),
+                    "currency": currency,
+                    "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0,
+                    "created_at": asset.get("created_at"),
+                    "updated_at": asset.get("updated_at")
+                }
+                
+                asset_type = asset.get("type")
+                if asset_type == "stock":
+                    asset_info.update({
+                        "symbol": asset.get("stock_symbol"),
+                        "quantity": float(asset.get("quantity", 0)) if asset.get("quantity") else 0,
+                        "purchase_price": float(asset.get("purchase_price", 0)) if asset.get("purchase_price") else 0,
+                        "current_price": float(asset.get("current_price", 0)) if asset.get("current_price") else 0,
+                        "purchase_date": asset.get("purchase_date")
+                    })
+                    portfolio_data[market]["stocks"].append(asset_info)
+                elif asset_type == "mutual_fund":
+                    asset_info.update({
+                        "nav": float(asset.get("nav", 0)) if asset.get("nav") else 0,
+                        "units": float(asset.get("units", 0)) if asset.get("units") else 0,
+                        "nav_purchase_date": asset.get("nav_purchase_date")
+                    })
+                    portfolio_data[market]["mutual_funds"].append(asset_info)
+                elif asset_type == "bank_account":
+                    asset_info.update({
+                        "bank_name": asset.get("bank_name"),
+                        "account_number": asset.get("account_number"),
+                        "account_type": asset.get("account_type"),
+                        "balance": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
+                    })
+                    portfolio_data[market]["bank_accounts"].append(asset_info)
+                elif asset_type == "fixed_deposit":
+                    asset_info.update({
+                        "bank_name": asset.get("name"),
+                        "principal_amount": float(asset.get("principal_amount", 0)) if asset.get("principal_amount") else 0,
+                        "interest_rate": float(asset.get("fd_interest_rate", 0)) if asset.get("fd_interest_rate") else 0,
+                        "start_date": asset.get("start_date"),
+                        "maturity_date": asset.get("maturity_date"),
+                        "maturity_amount": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
+                    })
+                    portfolio_data[market]["fixed_deposits"].append(asset_info)
+        except Exception as portfolio_error:
+            # If portfolio fetch fails, continue without portfolio data
+            import traceback
+            print(f"Warning: Could not fetch portfolio data: {str(portfolio_error)}")
+            print(f"Traceback: {traceback.format_exc()}")
+            portfolio_data = {
+                "india": {
+                    "currency": "INR",
+                    "stocks": [],
+                    "mutual_funds": [],
+                    "bank_accounts": [],
+                    "fixed_deposits": []
+                },
+                "europe": {
+                    "currency": "EUR",
+                    "stocks": [],
+                    "mutual_funds": [],
+                    "bank_accounts": [],
+                    "fixed_deposits": []
+                }
+            }
+        
+        # Convert portfolio to JSON string
+        portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
+        print(f"Portfolio JSON length: {len(portfolio_json)} characters")
+        print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits")
+        print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits")
         
         # Convert conversation history to dict format for LLM service
         history = None
@@ -45,8 +178,12 @@ async def chat(
                 for msg in request.conversation_history
             ]
         
-        # System prompt for finance assistant
-        system_prompt = """<Role>
+        # System prompt for finance assistant with portfolio data
+        # Log portfolio data before creating system prompt
+        print(f"Creating system prompt with portfolio data...")
+        print(f"Portfolio JSON preview (first 500 chars): {portfolio_json[:500]}")
+        
+        system_prompt = f"""<Role>
 You are FinAI, an intelligent financial advisor. Your purpose is to help users manage their finances, understand markets, and make informed investment decisions. You must always communicate clearly, accurately, and professionally while providing factual, data-based insights.
 </Role>
 
@@ -94,7 +231,25 @@ Caution: Financial markets carry inherent risks. This recommendation is provided
 
 <Example_Introduction>
 Hello, I'm FinAI — your personal finance assistant. I provide real-time financial insights, portfolio analysis, and data-driven investment guidance based on current market conditions. How can I assist you today?
-</Example_Introduction>"""
+</Example_Introduction>
+
+<Current_Portfolio>
+The user's current portfolio data is provided below in JSON format. Use this data to provide personalized insights and recommendations:
+
+```json
+{portfolio_json}
+```
+
+The portfolio is organized by market (India/Europe) and then by asset type. Each market has its own currency (INR for India, EUR for Europe).
+
+When analyzing the portfolio:
+1. Consider the asset allocation across different types (stocks, mutual funds, bank accounts, fixed deposits) within each market
+2. Analyze the distribution across different markets/currencies (INR for India, EUR for Europe)
+3. Calculate total portfolio value and breakdown by asset type for each market separately
+4. Provide insights on diversification, risk exposure, and potential improvements for each market
+5. Reference specific assets by name and market when making recommendations
+6. Note that India and Europe markets are separate - assets in one market do not affect the other
+</Current_Portfolio>"""
         
         # Get LLM response
         llm_response = await llm_service.chat(
@@ -103,9 +258,12 @@ Hello, I'm FinAI — your personal finance assistant. I provide real-time financ
             system_prompt=system_prompt
         )
         
+        # Generate unique message ID using UUID for guaranteed uniqueness
+        message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+        
         return ChatResponse(
             response=llm_response,
-            message_id=f"msg_{user_id}_{len(request.message)}"
+            message_id=message_id
         )
     except Exception as e:
         import traceback

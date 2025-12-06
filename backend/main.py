@@ -3,8 +3,10 @@ FinanceApp Backend API
 Python FastAPI backend for FinanceApp
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 from typing import Optional, Dict, Any
 import os
@@ -15,6 +17,31 @@ from auth import get_current_user
 load_dotenv()
 
 app = FastAPI(title="FinanceApp API", version="1.0.0")
+
+# Exception handler for validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle Pydantic validation errors with detailed logging"""
+    import json
+    errors = exc.errors()
+    error_details = []
+    for error in errors:
+        error_details.append({
+            "field": ".".join(str(loc) for loc in error["loc"]),
+            "message": error["msg"],
+            "type": error["type"]
+        })
+    
+    print(f"Validation error on {request.url.path}:")
+    print(json.dumps(error_details, indent=2))
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": error_details,
+            "message": "Validation error: Please check the request data"
+        }
+    )
 
 # CORS middleware to allow frontend requests
 # Get allowed origins from environment variable or use defaults

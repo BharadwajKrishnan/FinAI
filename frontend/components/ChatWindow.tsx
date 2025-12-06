@@ -16,6 +16,8 @@ export default function ChatWindow() {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messageIdCounterRef = useRef(0); // Counter for unique message IDs
+  const usedIdsRef = useRef<Set<string>>(new Set()); // Track used IDs to prevent duplicates
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -30,14 +32,25 @@ export default function ChatWindow() {
     setMessages([]);
     // Clear input field
     setInput("");
+    // Clear used IDs set
+    usedIdsRef.current.clear();
+    // Reset counter
+    messageIdCounterRef.current = 0;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
 
+    // Generate unique message ID - ensure it's never duplicated
+    let messageId: string;
+    do {
+      messageId = `user_${Date.now()}_${performance.now()}_${++messageIdCounterRef.current}_${Math.random().toString(36).substr(2, 9)}`;
+    } while (usedIdsRef.current.has(messageId));
+    usedIdsRef.current.add(messageId);
+    
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: messageId,
       role: "user",
       content: input.trim(),
       timestamp: new Date(),
@@ -92,8 +105,15 @@ export default function ChatWindow() {
 
       const data = await response.json();
 
+      // Always generate unique message ID on frontend to avoid duplicates
+      let assistantMessageId: string;
+      do {
+        assistantMessageId = `assistant_${Date.now()}_${performance.now()}_${++messageIdCounterRef.current}_${Math.random().toString(36).substr(2, 9)}`;
+      } while (usedIdsRef.current.has(assistantMessageId));
+      usedIdsRef.current.add(assistantMessageId);
+      
       const assistantMessage: Message = {
-        id: data.message_id || (Date.now() + 1).toString(),
+        id: assistantMessageId,
         role: "assistant",
         content: data.response,
         timestamp: new Date(),
@@ -114,8 +134,15 @@ export default function ChatWindow() {
         }
       }
       
+      // Generate unique message ID for error message
+      let errorMessageId: string;
+      do {
+        errorMessageId = `error_${Date.now()}_${performance.now()}_${++messageIdCounterRef.current}_${Math.random().toString(36).substr(2, 9)}`;
+      } while (usedIdsRef.current.has(errorMessageId));
+      usedIdsRef.current.add(errorMessageId);
+      
       const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
+        id: errorMessageId,
         role: "assistant",
         content: errorMessage,
         timestamp: new Date(),

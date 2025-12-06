@@ -211,6 +211,10 @@ export default function AssetsPage() {
 
         if (response.ok) {
           const assets = await response.json();
+          console.log(`Fetched ${assets.length} assets from database`);
+          if (assets.length > 0) {
+            console.log("Sample asset:", assets[0]);
+          }
           
           // Separate assets by market (based on currency)
           const indiaStocks: typeof stocks.india = [];
@@ -458,7 +462,10 @@ export default function AssetsPage() {
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
-      if (!accessToken) return;
+      if (!accessToken) {
+        console.error("No access token found when saving stock");
+        return;
+      }
 
       const currency = marketConfig[market].currency;
       // Calculate current price from actualWorth (current value) and quantity
@@ -473,10 +480,14 @@ export default function AssetsPage() {
         current_price: currentPrice.toString(), // Use calculated current price from actualWorth
         current_value: stock.actualWorth.toString(), // Use the manually set current value
         purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
+        is_active: true, // Explicitly set is_active
       };
+
+      console.log(`Saving stock to database: ${stock.name}, market: ${market}, currency: ${currency}`);
 
       if (stock.dbId) {
         // Update existing asset
+        console.log(`Updating existing stock with dbId: ${stock.dbId}`);
         const response = await fetch(`/api/assets/${stock.dbId}`, {
           method: "PUT",
           headers: {
@@ -555,11 +566,15 @@ export default function AssetsPage() {
         fd_interest_rate: fd.rateOfInterest.toString(),
         start_date: fd.startDate,
         maturity_date: fd.maturityDate,
-        current_value: fd.maturityAmount.toString(), // Use maturity amount as current value
+        current_value: fd.amountInvested.toString(), // Use principal amount, not maturity amount
+        is_active: true, // Explicitly set is_active
       };
+
+      console.log(`Saving fixed deposit to database: ${fd.bankName}, market: ${market}, currency: ${currency}`);
 
       if (fd.dbId) {
         // Update existing asset
+        console.log(`Updating existing fixed deposit with dbId: ${fd.dbId}`);
         const response = await fetch(`/api/assets/${fd.dbId}`, {
           method: "PUT",
           headers: {
@@ -568,9 +583,17 @@ export default function AssetsPage() {
           },
           body: JSON.stringify(assetData),
         });
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to update fixed deposit: ${errorData.message || response.statusText}`);
+        } else {
+          console.log(`Successfully updated fixed deposit: ${fd.bankName}`);
+        }
         return response.ok;
       } else {
         // Create new asset
+        console.log(`Creating new fixed deposit: ${fd.bankName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -582,7 +605,11 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
+          console.log(`Successfully created fixed deposit: ${fd.bankName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
+        } else {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to create fixed deposit: ${errorData.message || response.statusText}`, errorData);
         }
         return null;
       }
@@ -615,10 +642,14 @@ export default function AssetsPage() {
         units: fund.units.toString(),
         current_value: fund.currentWorth.toString(), // Use the manually set current value
         nav_purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
+        is_active: true, // Explicitly set is_active
       };
+
+      console.log(`Saving mutual fund to database: ${fund.fundName}, market: ${market}, currency: ${currency}`);
 
       if (fund.dbId) {
         // Update existing asset
+        console.log(`Updating existing mutual fund with dbId: ${fund.dbId}`);
         const response = await fetch(`/api/assets/${fund.dbId}`, {
           method: "PUT",
           headers: {
@@ -627,9 +658,17 @@ export default function AssetsPage() {
           },
           body: JSON.stringify(assetData),
         });
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to update mutual fund: ${errorData.message || response.statusText}`);
+        } else {
+          console.log(`Successfully updated mutual fund: ${fund.fundName}`);
+        }
         return response.ok;
       } else {
         // Create new asset
+        console.log(`Creating new mutual fund: ${fund.fundName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -641,7 +680,11 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
+          console.log(`Successfully created mutual fund: ${fund.fundName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
+        } else {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to create mutual fund: ${errorData.message || response.statusText}`, errorData);
         }
         return null;
       }
@@ -672,7 +715,10 @@ export default function AssetsPage() {
         account_number: account.accountNumber || null,
         account_type: "savings", // Default to savings
         current_value: account.balance.toString(),
+        is_active: true, // Explicitly set is_active
       };
+
+      console.log(`Saving bank account to database: ${account.bankName}, market: ${market}, currency: ${currency}`);
 
       if (account.dbId) {
         // Update existing asset
@@ -684,9 +730,17 @@ export default function AssetsPage() {
           },
           body: JSON.stringify(assetData),
         });
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to update bank account: ${errorData.message || response.statusText}`);
+        } else {
+          console.log(`Successfully updated bank account: ${account.bankName}`);
+        }
         return response.ok;
       } else {
         // Create new asset
+        console.log(`Creating new bank account: ${account.bankName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -698,7 +752,11 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
+          console.log(`Successfully created bank account: ${account.bankName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
+        } else {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error(`Failed to create bank account: ${errorData.message || response.statusText}`, errorData);
         }
         return null;
       }

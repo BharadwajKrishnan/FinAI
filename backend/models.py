@@ -2,8 +2,8 @@
 Pydantic models for FinanceApp - Asset Tracking
 """
 
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator, field_serializer
+from typing import Optional, Union
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -26,10 +26,19 @@ class BankAccountType(str, Enum):
 class AssetBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     type: AssetType
-    current_value: Decimal = Field(default=Decimal("0.00"), ge=0)
+    current_value: Union[Decimal, str, float] = Field(default=Decimal("0.00"), ge=0)
     currency: str = Field(default="USD", max_length=3)
     notes: Optional[str] = None
     is_active: bool = Field(default=True)
+    
+    @field_validator('current_value', mode='before')
+    @classmethod
+    def convert_current_value(cls, v):
+        if isinstance(v, str):
+            return Decimal(v)
+        if isinstance(v, float):
+            return Decimal(str(v))
+        return v
 
 
 # Stock-specific fields
@@ -70,6 +79,19 @@ class FixedDepositFields(BaseModel):
 
 # Asset Create Models (with type-specific validation)
 class AssetCreate(AssetBase):
+    class Config:
+        json_encoders = {
+            Decimal: str
+        }
+        # Allow string input for Decimal fields
+        json_schema_extra = {
+            "example": {
+                "name": "Example Asset",
+                "type": "stock",
+                "current_value": "1000.00",
+                "currency": "USD"
+            }
+        }
     # Stock fields
     stock_symbol: Optional[str] = Field(None, max_length=20)
     stock_exchange: Optional[str] = Field(None, max_length=50)
@@ -104,6 +126,41 @@ class AssetCreate(AssetBase):
         """Validate that required fields are present based on asset type"""
         # Note: This validation is done at the API level in the router
         # Pydantic field_validator runs before all fields are set, so we do basic validation here
+        return v
+    
+    # Validators to convert strings to Decimal for all Decimal fields
+    @field_validator('quantity', 'purchase_price', 'current_price', 'nav', 'units', 
+                     'interest_rate', 'principal_amount', 'fd_interest_rate', mode='before')
+    @classmethod
+    def convert_decimal_fields(cls, v):
+        """Convert string or float to Decimal"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return Decimal(v)
+            except:
+                return None
+        if isinstance(v, float):
+            return Decimal(str(v))
+        if isinstance(v, int):
+            return Decimal(str(v))
+        return v
+    
+    # Validator to convert string dates to date objects
+    @field_validator('purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', mode='before')
+    @classmethod
+    def convert_date_fields(cls, v):
+        """Convert string dates to date objects"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                from datetime import datetime
+                # Try parsing ISO format (YYYY-MM-DD)
+                return datetime.strptime(v, '%Y-%m-%d').date()
+            except:
+                return None
         return v
     
     def model_validate_asset_fields(self):

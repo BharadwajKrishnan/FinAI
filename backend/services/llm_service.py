@@ -57,11 +57,22 @@ class LLMService:
                 # Build conversation history for context
                 prompt_parts = []
                 
-                # Add system prompt if provided (but keep it concise to avoid confusion)
+                # Add system prompt if provided
                 if system_prompt:
-                    # Simplify system prompt to avoid mentioning backend/server
-                    simplified_prompt = system_prompt.replace("backend", "").replace("server", "")
-                    prompt_parts.append(simplified_prompt)
+                    # Only remove backend/server mentions from non-portfolio parts to avoid breaking JSON
+                    # Split by <Current_Portfolio> to preserve portfolio JSON
+                    if "<Current_Portfolio>" in system_prompt:
+                        parts = system_prompt.split("<Current_Portfolio>")
+                        if len(parts) == 2:
+                            # Clean the first part, keep portfolio section intact
+                            cleaned_first = parts[0].replace("backend", "").replace("server", "")
+                            prompt_parts.append(cleaned_first + "<Current_Portfolio>" + parts[1])
+                        else:
+                            prompt_parts.append(system_prompt)
+                    else:
+                        # No portfolio section, safe to clean
+                        simplified_prompt = system_prompt.replace("backend", "").replace("server", "")
+                        prompt_parts.append(simplified_prompt)
                 
                 # Add conversation history (filter out any error messages about backend)
                 for msg in conversation_history[-10:]:  # Keep last 10 messages for context
@@ -78,9 +89,17 @@ class LLMService:
             else:
                 # For first message, include system prompt if provided
                 if system_prompt:
-                    # Simplify system prompt
-                    simplified_prompt = system_prompt.replace("backend", "").replace("server", "")
-                    full_prompt = f"{simplified_prompt}\n\nUser: {message}"
+                    # Only remove backend/server mentions from non-portfolio parts
+                    if "<Current_Portfolio>" in system_prompt:
+                        parts = system_prompt.split("<Current_Portfolio>")
+                        if len(parts) == 2:
+                            cleaned_first = parts[0].replace("backend", "").replace("server", "")
+                            full_prompt = f"{cleaned_first}<Current_Portfolio>{parts[1]}\n\nUser: {message}"
+                        else:
+                            full_prompt = f"{system_prompt}\n\nUser: {message}"
+                    else:
+                        simplified_prompt = system_prompt.replace("backend", "").replace("server", "")
+                        full_prompt = f"{simplified_prompt}\n\nUser: {message}"
                 else:
                     full_prompt = message
             
