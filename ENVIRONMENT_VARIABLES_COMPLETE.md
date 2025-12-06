@@ -14,31 +14,37 @@ When deploying your backend, you need to add these environment variables:
    - **Value**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI`
    - **What it does**: Your Supabase anon/public key for API access
 
-3. **GEMINI_API_KEY**
+3. **SUPABASE_SERVICE_ROLE_KEY** ⚠️ **REQUIRED for asset operations**
+   - **Value**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ`
+   - **What it does**: Service role key that bypasses RLS for backend operations (create/delete assets)
+   - **Where to find**: Supabase Dashboard → Settings → API → `service_role` key (secret)
+   - **Important**: This is required for asset creation and deletion to work
+
+4. **GEMINI_API_KEY**
    - **Value**: `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc`
    - **What it does**: API key for Google Gemini LLM
 
-4. **GEMINI_MODEL**
+5. **GEMINI_MODEL**
    - **Value**: `gemini-2.5-flash`
    - **What it does**: Which Gemini model to use
 
-5. **LLM_PROVIDER**
+6. **LLM_PROVIDER**
    - **Value**: `gemini`
    - **What it does**: Which LLM provider to use (currently only Gemini)
 
 ### Optional Variables
 
-6. **ALLOWED_ORIGINS** (Optional but recommended)
+7. **ALLOWED_ORIGINS** (Optional but recommended)
    - **Value**: `https://your-app.vercel.app,http://localhost:3000`
    - **What it does**: Comma-separated list of allowed frontend URLs for CORS
    - **Note**: If not set, backend will auto-detect Vercel URL from `VERCEL_URL` env var
 
-7. **VERCEL_URL** (Optional)
+8. **VERCEL_URL** (Optional)
    - **Value**: Your Vercel frontend URL (e.g., `your-app.vercel.app`)
    - **What it does**: Auto-adds to CORS allowed origins
    - **Note**: Usually set automatically if deploying from Vercel, but you can set manually
 
-8. **FINNHUB_API_KEY** (Optional - for stock search)
+9. **FINNHUB_API_KEY** (Optional - for stock search)
    - **Value**: `d4otov1r01qnosaam4v0d4otov1r01qnosaam4vg`
    - **What it does**: API key for Finnhub stock search (if you re-enable stock search later)
 
@@ -66,6 +72,7 @@ When deploying your frontend on Vercel, you need:
 ```
 SUPABASE_URL=https://fuvloymbqvdmxasxajif.supabase.co
 SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ
 GEMINI_API_KEY=AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc
 GEMINI_MODEL=gemini-2.5-flash
 LLM_PROVIDER=gemini
@@ -99,18 +106,23 @@ When adding environment variables in Render, copy-paste these one by one:
 - Value: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI`
 
 **Variable 3:**
+- Key: `SUPABASE_SERVICE_ROLE_KEY`
+- Value: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ`
+- **Important**: Required for asset creation and deletion to work
+
+**Variable 4:**
 - Key: `GEMINI_API_KEY`
 - Value: `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc`
 
-**Variable 4:**
+**Variable 5:**
 - Key: `GEMINI_MODEL`
 - Value: `gemini-2.5-flash`
 
-**Variable 5:**
+**Variable 6:**
 - Key: `LLM_PROVIDER`
 - Value: `gemini`
 
-**Variable 6 (After you get your Vercel URL):**
+**Variable 7 (After you get your Vercel URL):**
 - Key: `ALLOWED_ORIGINS`
 - Value: `https://your-app.vercel.app,http://localhost:3000`
 - Replace `your-app.vercel.app` with your actual Vercel URL
@@ -129,6 +141,7 @@ When adding environment variables in Render, copy-paste these one by one:
 |----------|-----------|---------------|
 | `SUPABASE_URL` | ✅ Yes | `https://fuvloymbqvdmxasxajif.supabase.co` |
 | `SUPABASE_KEY` | ✅ Yes | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ Yes | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` (service_role) |
 | `GEMINI_API_KEY` | ✅ Yes | `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc` |
 | `GEMINI_MODEL` | ✅ Yes | `gemini-2.5-flash` |
 | `LLM_PROVIDER` | ✅ Yes | `gemini` |
