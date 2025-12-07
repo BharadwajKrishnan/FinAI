@@ -89,7 +89,8 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
    - **anon public** key → `SUPABASE_KEY`
 
 ### Gemini API Key
-- You already have this: `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc`
+- Get a new API key from: https://aistudio.google.com/apikey
+- Replace `your_gemini_api_key` with your actual API key
 
 ## Quick Checklist
 

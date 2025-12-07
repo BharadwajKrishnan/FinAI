@@ -7,21 +7,23 @@ When deploying your backend, you need to add these environment variables:
 ### Required Variables
 
 1. **SUPABASE_URL**
-   - **Value**: `https://fuvloymbqvdmxasxajif.supabase.co`
+   - **Value**: `your_supabase_url` (e.g., `https://xxxxx.supabase.co`)
    - **What it does**: Your Supabase project URL
+   - **Where to find**: Supabase Dashboard → Settings → API → Project URL
 
 2. **SUPABASE_KEY**
-   - **Value**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI`
+   - **Value**: `your_supabase_anon_key` (JWT token)
    - **What it does**: Your Supabase anon/public key for API access
+   - **Where to find**: Supabase Dashboard → Settings → API → `anon` `public` key
 
 3. **SUPABASE_SERVICE_ROLE_KEY** ⚠️ **REQUIRED for asset operations**
-   - **Value**: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ`
+   - **Value**: `your_supabase_service_role_key` (JWT token)
    - **What it does**: Service role key that bypasses RLS for backend operations (create/delete assets)
    - **Where to find**: Supabase Dashboard → Settings → API → `service_role` key (secret)
    - **Important**: This is required for asset creation and deletion to work
 
 4. **GEMINI_API_KEY**
-   - **Value**: `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc`
+   - **Value**: `your_gemini_api_key` (Get from https://aistudio.google.com/apikey)
    - **What it does**: API key for Google Gemini LLM
 
 5. **GEMINI_MODEL**
@@ -45,7 +47,7 @@ When deploying your backend, you need to add these environment variables:
    - **Note**: Usually set automatically if deploying from Vercel, but you can set manually
 
 9. **FINNHUB_API_KEY** (Optional - for stock search)
-   - **Value**: `d4otov1r01qnosaam4v0d4otov1r01qnosaam4vg`
+   - **Value**: `your_finnhub_api_key` (Get from https://finnhub.io/register)
    - **What it does**: API key for Finnhub stock search (if you re-enable stock search later)
 
 ## For Frontend Deployment (Vercel)
@@ -70,10 +72,10 @@ When deploying your frontend on Vercel, you need:
 5. Add these environment variables:
 
 ```
-SUPABASE_URL=https://fuvloymbqvdmxasxajif.supabase.co
-SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ
-GEMINI_API_KEY=AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-2.5-flash
 LLM_PROVIDER=gemini
 ALLOWED_ORIGINS=https://your-app.vercel.app,http://localhost:3000
@@ -99,20 +101,20 @@ When adding environment variables in Render, copy-paste these one by one:
 
 **Variable 1:**
 - Key: `SUPABASE_URL`
-- Value: `https://fuvloymbqvdmxasxajif.supabase.co`
+- Value: `your_supabase_url` (Get from Supabase Dashboard → Settings → API)
 
 **Variable 2:**
 - Key: `SUPABASE_KEY`
-- Value: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI`
+- Value: `your_supabase_anon_key` (Get from Supabase Dashboard → Settings → API → anon public key)
 
 **Variable 3:**
 - Key: `SUPABASE_SERVICE_ROLE_KEY`
-- Value: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NDc3NjIzMCwiZXhwIjoyMDgwMzUyMjMwfQ.hELRyvNXRdd778cmJhnEwcyvvS-WZWCGhSjGSFXdVRQ`
+- Value: `your_supabase_service_role_key` (Get from Supabase Dashboard → Settings → API → service_role key)
 - **Important**: Required for asset creation and deletion to work
 
 **Variable 4:**
 - Key: `GEMINI_API_KEY`
-- Value: `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc`
+- Value: `your_gemini_api_key` (Get from https://aistudio.google.com/apikey)
 
 **Variable 5:**
 - Key: `GEMINI_MODEL`
@@ -139,14 +141,14 @@ When adding environment variables in Render, copy-paste these one by one:
 ### Backend (Render/Railway/Fly.io)
 | Variable | Required? | Example Value |
 |----------|-----------|---------------|
-| `SUPABASE_URL` | ✅ Yes | `https://fuvloymbqvdmxasxajif.supabase.co` |
-| `SUPABASE_KEY` | ✅ Yes | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ Yes | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` (service_role) |
-| `GEMINI_API_KEY` | ✅ Yes | `AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc` |
+| `SUPABASE_URL` | ✅ Yes | `your_supabase_url` |
+| `SUPABASE_KEY` | ✅ Yes | `your_supabase_anon_key` |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ Yes | `your_supabase_service_role_key` |
+| `GEMINI_API_KEY` | ✅ Yes | `your_gemini_api_key` |
 | `GEMINI_MODEL` | ✅ Yes | `gemini-2.5-flash` |
 | `LLM_PROVIDER` | ✅ Yes | `gemini` |
 | `ALLOWED_ORIGINS` | ⚠️ Recommended | `https://your-app.vercel.app,http://localhost:3000` |
-| `FINNHUB_API_KEY` | ❌ Optional | `d4otov1r01qnosaam4v0d4otov1r01qnosaam4vg` |
+| `FINNHUB_API_KEY` | ❌ Optional | `your_finnhub_api_key` |
 
 ### Frontend (Vercel)
 | Variable | Required? | Example Value |

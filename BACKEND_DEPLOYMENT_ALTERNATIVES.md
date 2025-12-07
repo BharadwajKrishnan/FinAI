@@ -38,9 +38,10 @@ Here are several alternatives to Railway for deploying your Python FastAPI backe
    - Scroll to **"Environment Variables"** section
    - Click **"Add Environment Variable"** for each:
      ```
-     SUPABASE_URL = https://fuvloymbqvdmxasxajif.supabase.co
-     SUPABASE_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI
-     GEMINI_API_KEY = AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc
+     SUPABASE_URL = your_supabase_url
+     SUPABASE_KEY = your_supabase_anon_key
+     SUPABASE_SERVICE_ROLE_KEY = your_supabase_service_role_key
+     GEMINI_API_KEY = your_gemini_api_key
      GEMINI_MODEL = gemini-2.5-flash
      LLM_PROVIDER = gemini
      ```
@@ -99,9 +100,10 @@ Here are several alternatives to Railway for deploying your Python FastAPI backe
 
 5. **Set Environment Variables**
    ```bash
-   fly secrets set SUPABASE_URL="https://fuvloymbqvdmxasxajif.supabase.co"
-   fly secrets set SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dmxveW1icXZkbXhhc3hhamlmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ3NzYyMzAsImV4cCI6MjA4MDM1MjIzMH0.HoeQ8dgAz4pZhyNpNHc_UeRiReZHcfFOIa23PHT-dYI"
-   fly secrets set GEMINI_API_KEY="AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc"
+   fly secrets set SUPABASE_URL="your_supabase_url"
+   fly secrets set SUPABASE_KEY="your_supabase_anon_key"
+   fly secrets set SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
+   fly secrets set GEMINI_API_KEY="your_gemini_api_key"
    fly secrets set GEMINI_MODEL="gemini-2.5-flash"
    fly secrets set LLM_PROVIDER="gemini"
    ```
@@ -190,9 +192,10 @@ Here are several alternatives to Railway for deploying your Python FastAPI backe
 
 5. **Set Environment Variables**
    ```bash
-   heroku config:set SUPABASE_URL="https://fuvloymbqvdmxasxajif.supabase.co"
-   heroku config:set SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-   heroku config:set GEMINI_API_KEY="AIzaSyBPTUGTDhGcCP_bDdwQTjAShQvZTic6shc"
+   heroku config:set SUPABASE_URL="your_supabase_url"
+   heroku config:set SUPABASE_KEY="your_supabase_anon_key"
+   heroku config:set SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
+   heroku config:set GEMINI_API_KEY="your_gemini_api_key"
    heroku config:set GEMINI_MODEL="gemini-2.5-flash"
    heroku config:set LLM_PROVIDER="gemini"
    ```

@@ -119,6 +119,11 @@ class LLMService:
             )
             
             # Extract text from response (response.text should work based on our test)
+            print(f"Gemini API call completed. Response type: {type(response)}")
+            print(f"Response has 'text' attribute: {hasattr(response, 'text')}")
+            if hasattr(response, 'text'):
+                print(f"Response.text value: {response.text if response.text else 'None/Empty'}")
+            
             if hasattr(response, 'text') and response.text:
                 result_text = response.text
                 print(f"Gemini response received (first 200 chars): {result_text[:200]}...")
@@ -130,32 +135,74 @@ class LLMService:
                 
                 return result_text
             elif hasattr(response, 'candidates') and response.candidates:
+                print(f"Extracting from candidates. Number of candidates: {len(response.candidates)}")
                 # Fallback: extract from candidates
                 candidate = response.candidates[0]
+                print(f"Candidate type: {type(candidate)}")
+                print(f"Candidate has 'content': {hasattr(candidate, 'content')}")
+                
                 if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    print(f"Content has 'parts': {hasattr(candidate.content, 'parts')}")
                     text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                    print(f"Extracted {len(text_parts)} text parts")
                     if text_parts:
                         result_text = "".join(text_parts)
                         print(f"Gemini response extracted from candidates (first 200 chars): {result_text[:200]}...")
                         return result_text
+                    else:
+                        print("No text parts found in candidate content")
+                else:
+                    print(f"Candidate structure: {dir(candidate)}")
+                    if hasattr(candidate, 'content'):
+                        print(f"Content structure: {dir(candidate.content)}")
             
-            # If we can't extract text, return an error message
+            # If we can't extract text, return an error message with more details
             print(f"Error: Could not extract response from Gemini API. Response type: {type(response)}")
-            print(f"Response attributes: {dir(response)}")
+            print(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}")
             if hasattr(response, 'candidates'):
                 print(f"Candidates: {response.candidates}")
-            return f"Error: Could not extract response from Gemini API. Response type: {type(response)}"
+            if hasattr(response, 'prompt_feedback'):
+                print(f"Prompt feedback: {response.prompt_feedback}")
+            
+            # Try to get any error message from the response
+            error_detail = "Unknown error"
+            if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+                if hasattr(response.prompt_feedback, 'block_reason'):
+                    error_detail = f"Blocked: {response.prompt_feedback.block_reason}"
+                elif hasattr(response.prompt_feedback, 'safety_ratings'):
+                    error_detail = f"Safety ratings: {response.prompt_feedback.safety_ratings}"
+            
+            return f"Error: Could not extract response from Gemini API. {error_detail}. Please check the backend logs for more details."
             
         except ImportError:
             return "google-genai package not installed. Please run: pip install google-genai"
         except Exception as e:
             import traceback
             error_details = traceback.format_exc()
-            print(f"Gemini API Error: {str(e)}")
+            error_msg = str(e)
+            print(f"Gemini API Error: {error_msg}")
             print(f"Traceback: {error_details}")
-            # Don't return error messages that might confuse the user
-            # Instead, return a helpful message
-            return f"I encountered an error while processing your request. Please try again or rephrase your question."
+            print(f"Model: {model_name}")
+            print(f"API Key present: {bool(api_key)}")
+            print(f"Prompt length: {len(full_prompt) if 'full_prompt' in locals() else 'N/A'}")
+            
+            # Check for specific error types
+            error_lower = error_msg.lower()
+            
+            # Handle leaked API key error specifically
+            if "leaked" in error_lower or ("403" in error_msg and "permission_denied" in error_lower):
+                return "Your Gemini API key has been reported as leaked and is no longer valid. Please generate a new API key from Google AI Studio (https://aistudio.google.com/apikey) and update the GEMINI_API_KEY in your environment variables."
+            elif "api key" in error_lower or "authentication" in error_lower or "permission_denied" in error_lower:
+                return "I'm having trouble authenticating with the AI service. Please check that your GEMINI_API_KEY is correctly set in your environment variables and is valid."
+            elif "quota" in error_lower or "rate limit" in error_lower:
+                return "The AI service is currently rate-limited. Please try again in a moment."
+            elif "timeout" in error_lower:
+                return "The request timed out. Please try again with a shorter question."
+            elif "content" in error_lower and "policy" in error_lower:
+                return "I cannot process this request due to content policy restrictions. Please rephrase your question."
+            else:
+                # For debugging, include error type but not full details
+                return f"I encountered an error while processing your request: {type(e).__name__}. Please check the backend logs for more details."
     
     async def chat(
         self,
