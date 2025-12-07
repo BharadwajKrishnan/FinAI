@@ -62,16 +62,29 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- Chat messages table - stores conversation history
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    message_order INTEGER NOT NULL, -- Order of message in conversation (for sorting)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_assets_user_id ON assets(user_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
 CREATE INDEX IF NOT EXISTS idx_assets_user_type ON assets(user_id, type);
 CREATE INDEX IF NOT EXISTS idx_assets_stock_symbol ON assets(stock_symbol) WHERE stock_symbol IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assets_mutual_fund_code ON assets(mutual_fund_code) WHERE mutual_fund_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id ON chat_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_order ON chat_messages(user_id, message_order);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies: Users can only access their own data
 
@@ -104,6 +117,19 @@ CREATE POLICY "Users can update their own profile"
 CREATE POLICY "Users can insert their own profile"
     ON user_profiles FOR INSERT
     WITH CHECK (auth.uid() = id);
+
+-- Chat messages policies
+CREATE POLICY "Users can view their own chat messages"
+    ON chat_messages FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own chat messages"
+    ON chat_messages FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own chat messages"
+    ON chat_messages FOR DELETE
+    USING (auth.uid() = user_id);
 
 -- Function to automatically create user profile on signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()

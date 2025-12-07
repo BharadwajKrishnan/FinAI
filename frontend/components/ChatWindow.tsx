@@ -27,8 +27,72 @@ export default function ChatWindow() {
     scrollToBottom();
   }, [messages]);
 
-  const clearChat = () => {
-    // Clear all messages
+  // Load chat history on mount
+  useEffect(() => {
+    const loadChatHistory = async () => {
+      try {
+        const accessToken = localStorage.getItem("access_token");
+        if (!accessToken) {
+          return; // User not authenticated, skip loading history
+        }
+
+        const response = await fetch("/api/chat", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.messages && data.messages.length > 0) {
+            // Convert database messages to frontend format
+            const loadedMessages: Message[] = data.messages.map((msg: any) => ({
+              id: msg.id,
+              role: msg.role,
+              content: msg.content,
+              timestamp: new Date(msg.timestamp),
+            }));
+            
+            setMessages(loadedMessages);
+            
+            // Track loaded message IDs to avoid duplicates
+            loadedMessages.forEach((msg) => {
+              usedIdsRef.current.add(msg.id);
+            });
+          }
+        } else if (response.status === 404) {
+          // Route not found - this is expected if the route hasn't been set up yet
+          console.warn("Chat history endpoint not found. Make sure the API route is properly configured.");
+        }
+      } catch (error) {
+        console.error("Error loading chat history:", error);
+        // Don't show error to user, just continue with empty chat
+      }
+    };
+
+    loadChatHistory();
+  }, []);
+
+  const clearChat = async () => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (accessToken) {
+        // Clear chat history from database
+        await fetch("/api/chat", {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Error clearing chat history from database:", error);
+      // Continue with local clear even if database clear fails
+    }
+    
+    // Clear all messages locally
     setMessages([]);
     // Clear input field
     setInput("");

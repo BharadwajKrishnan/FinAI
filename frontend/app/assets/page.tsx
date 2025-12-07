@@ -37,6 +37,24 @@ const tabConfig = [
   { id: "fixed_deposits" as ActiveTab, label: "Fixed Deposits" },
 ];
 
+// Helper function to format date as DD/MM/YYYY
+const formatDateDDMMYYYY = (dateString: string): string => {
+  try {
+    const date = new Date(dateString);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+  } catch (error) {
+    // If date parsing fails, try to parse YYYY-MM-DD format directly
+    const parts = dateString.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return dateString; // Return as-is if parsing fails
+  }
+};
+
 export default function AssetsPage() {
   const [selectedMarket, setSelectedMarket] = useState<Market>("india");
   const [isAddAssetModalOpen, setIsAddAssetModalOpen] = useState(false);
@@ -63,6 +81,7 @@ export default function AssetsPage() {
     quantity: number;
     totalInvested: number; // Total amount invested
     actualWorth: number; // Current market value (for now same as invested, will be updated with real-time prices)
+    purchaseDate?: string; // Purchase date
   }>>>({
     india: [],
     europe: [],
@@ -89,6 +108,7 @@ export default function AssetsPage() {
     units: number; // Number of units purchased
     totalInvested: number; // NAV * Units
     currentWorth: number; // Current NAV * Units (for now same as invested, can be updated later)
+    purchaseDate?: string; // Purchase date
   }>>>({
     india: [],
     europe: [],
@@ -117,6 +137,7 @@ export default function AssetsPage() {
   const [stockSymbol, setStockSymbol] = useState(""); // Store the actual stock symbol
   const [stockPrice, setStockPrice] = useState("");
   const [stockQuantity, setStockQuantity] = useState("");
+  const [stockPurchaseDate, setStockPurchaseDate] = useState(new Date().toISOString().split('T')[0]); // Purchase date
   
   // Bank Account-specific fields
   const [bankName, setBankName] = useState("");
@@ -127,6 +148,7 @@ export default function AssetsPage() {
   const [fundName, setFundName] = useState("");
   const [nav, setNav] = useState("");
   const [units, setUnits] = useState("");
+  const [mutualFundPurchaseDate, setMutualFundPurchaseDate] = useState(new Date().toISOString().split('T')[0]); // Purchase date
   const [stockCurrentWorth, setStockCurrentWorth] = useState(""); // For editing stock current value
   const [mutualFundCurrentWorth, setMutualFundCurrentWorth] = useState(""); // For editing mutual fund current value
   
@@ -135,6 +157,7 @@ export default function AssetsPage() {
   const [fdAmount, setFdAmount] = useState("");
   const [fdRate, setFdRate] = useState("");
   const [fdDuration, setFdDuration] = useState(""); // Duration in months
+  const [fdStartDate, setFdStartDate] = useState(new Date().toISOString().split('T')[0]); // Start date
   
   const currentMarket = marketConfig[selectedMarket];
   const currentNetWorth = netWorth[selectedMarket];
@@ -247,6 +270,7 @@ export default function AssetsPage() {
                 quantity: quantity,
                 totalInvested: totalInvested,
                 actualWorth: actualWorth, // Current market value
+                purchaseDate: asset.purchase_date || new Date().toISOString().split('T')[0],
               };
               
               if (market === "india") {
@@ -282,6 +306,7 @@ export default function AssetsPage() {
                 units: unitsValue,
                 totalInvested: totalInvested,
                 currentWorth: currentWorth,
+                purchaseDate: asset.nav_purchase_date || new Date().toISOString().split('T')[0],
               };
               
               if (market === "india") {
@@ -479,7 +504,7 @@ export default function AssetsPage() {
         purchase_price: stock.price.toString(),
         current_price: currentPrice.toString(), // Use calculated current price from actualWorth
         current_value: stock.actualWorth.toString(), // Use the manually set current value
-        purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
+        purchase_date: stockPurchaseDate, // Use user-selected purchase date
         is_active: true, // Explicitly set is_active
       };
 
@@ -652,7 +677,7 @@ export default function AssetsPage() {
         nav: fund.nav.toString(),
         units: fund.units.toString(),
         current_value: fund.currentWorth.toString(), // Use the manually set current value
-        nav_purchase_date: new Date().toISOString().split('T')[0], // Today's date as default
+        nav_purchase_date: (fund as any).purchaseDate || mutualFundPurchaseDate, // Use user-selected purchase date
         is_active: true, // Explicitly set is_active
       };
 
@@ -726,6 +751,7 @@ export default function AssetsPage() {
         account_number: account.accountNumber || null,
         account_type: "savings", // Default to savings
         current_value: account.balance.toString(),
+        notes: null,
         is_active: true, // Explicitly set is_active
       };
 
@@ -961,6 +987,11 @@ export default function AssetsPage() {
                                           })}
                                         </span>
                                         <span>Qty: {stock.quantity}</span>
+                                        {stock.purchaseDate && (
+                                          <span>
+                                            Purchase Date: {formatDateDDMMYYYY(stock.purchaseDate)}
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                     <div className="flex items-center space-x-1">
@@ -973,6 +1004,7 @@ export default function AssetsPage() {
                                           setStockSymbol(stock.symbol || ""); // Load existing symbol
                                           setStockPrice(stock.price.toString());
                                           setStockQuantity(stock.quantity.toString());
+                                          setStockPurchaseDate(stock.purchaseDate || new Date().toISOString().split('T')[0]);
                                           setStockCurrentWorth(stock.actualWorth.toString()); // Load current worth
                                           setIsAddAssetModalOpen(true);
                                         }}
@@ -1317,6 +1349,11 @@ export default function AssetsPage() {
                                           minimumFractionDigits: 2,
                                           maximumFractionDigits: 2,
                                         })}</span>
+                                        {fund.purchaseDate && (
+                                          <span>
+                                            Purchase Date: {formatDateDDMMYYYY(fund.purchaseDate)}
+                                          </span>
+                                        )}
                                       </div>
                                     </div>
                                     <div className="flex items-center space-x-1">
@@ -1327,6 +1364,7 @@ export default function AssetsPage() {
                                           setFundName(fund.fundName);
                                           setNav(fund.nav.toString());
                                           setUnits(fund.units.toString());
+                                          setMutualFundPurchaseDate(fund.purchaseDate || new Date().toISOString().split('T')[0]);
                                           setMutualFundCurrentWorth(fund.currentWorth.toString()); // Load current worth
                                           setIsAddAssetModalOpen(true);
                                         }}
@@ -1514,6 +1552,7 @@ export default function AssetsPage() {
                                             setFdAmount(fd.amountInvested.toString());
                                             setFdRate(fd.rateOfInterest.toString());
                                             setFdDuration(fd.duration.toString());
+                                            setFdStartDate(fd.startDate || new Date().toISOString().split('T')[0]);
                                             setIsAddAssetModalOpen(true);
                                           }}
                                           className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -1784,6 +1823,7 @@ export default function AssetsPage() {
                             quantity: quantity,
                             totalInvested: totalInvested,
                             actualWorth: currentWorth, // Use manually entered current value
+                            purchaseDate: stockPurchaseDate, // Include purchase date
                           };
                           
                           // Save to database (async, but don't wait)
@@ -1839,6 +1879,7 @@ export default function AssetsPage() {
                             quantity: newQuantity,
                             totalInvested: newTotalInvested,
                             actualWorth: newTotalInvested, // Will be updated by price update service
+                            purchaseDate: stockPurchaseDate, // Include purchase date
                           };
                         
                         // Update the existing stock
@@ -1856,6 +1897,7 @@ export default function AssetsPage() {
                             quantity: quantity,
                             totalInvested: totalInvested,
                             actualWorth: totalInvested, // Will be updated by price update service
+                            purchaseDate: stockPurchaseDate, // Include purchase date
                           };
                         
                         updatedStocks = [...marketStocks, newStock];
@@ -1918,10 +1960,11 @@ export default function AssetsPage() {
                             units: unitsValue,
                             totalInvested: totalInvested,
                             currentWorth: currentWorth, // Use manually entered current value
+                            purchaseDate: mutualFundPurchaseDate, // Include purchase date
                           };
                           
                           // Save to database (async, but don't wait)
-                          saveMutualFundToDatabase(updatedFunds[fundIndex], selectedMarket).catch(console.error);
+                          saveMutualFundToDatabase({ ...updatedFunds[fundIndex], purchaseDate: mutualFundPurchaseDate } as any, selectedMarket).catch(console.error);
                           
                           // Calculate new net worth with updated funds
                           const updatedStocks = stocks[selectedMarket];
@@ -1957,10 +2000,11 @@ export default function AssetsPage() {
                         units: unitsValue,
                         totalInvested: totalInvested,
                         currentWorth: totalInvested, // For now, same as invested
+                        purchaseDate: mutualFundPurchaseDate, // Include purchase date
                       };
                       
                       // Save to database
-                      const dbId = await saveMutualFundToDatabase(newMutualFund, selectedMarket);
+                      const dbId = await saveMutualFundToDatabase({ ...newMutualFund, purchaseDate: mutualFundPurchaseDate } as any, selectedMarket);
                       if (dbId && typeof dbId === 'string') {
                         newMutualFund.dbId = dbId;
                         newMutualFund.id = dbId; // Use database ID as the main ID
@@ -1997,8 +2041,8 @@ export default function AssetsPage() {
                     const maturityAmount = calculateMaturityAmount(amountInvested, rateOfInterest, duration);
                     
                     // Calculate dates
-                    const startDate = new Date();
-                    const maturityDate = new Date();
+                    const startDate = new Date(fdStartDate);
+                    const maturityDate = new Date(startDate);
                     maturityDate.setMonth(maturityDate.getMonth() + duration);
                     
                     if (editingFixedDepositId) {
@@ -2101,6 +2145,7 @@ export default function AssetsPage() {
                   setStockSymbol("");
                   setStockPrice("");
                   setStockQuantity("");
+                  setStockPurchaseDate(new Date().toISOString().split('T')[0]);
                   setStockCurrentWorth("");
                   setBankName("");
                   setAccountNumber("");
@@ -2108,11 +2153,13 @@ export default function AssetsPage() {
                   setFundName("");
                   setNav("");
                   setUnits("");
+                  setMutualFundPurchaseDate(new Date().toISOString().split('T')[0]);
                   setMutualFundCurrentWorth("");
                   setFdBankName("");
                   setFdAmount("");
                   setFdRate("");
                   setFdDuration("");
+                  setFdStartDate(new Date().toISOString().split('T')[0]);
                   setEditingStockId(null);
                   setEditingBankAccountId(null);
                   setEditingMutualFundId(null);
@@ -2185,6 +2232,24 @@ export default function AssetsPage() {
                         min="1"
                         required
                         placeholder="Enter quantity"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="stock-purchase-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Purchase Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="stock-purchase-date"
+                        value={stockPurchaseDate}
+                        onChange={(e) => setStockPurchaseDate(e.target.value)}
+                        required
+                        max={new Date().toISOString().split('T')[0]}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                       />
                     </div>
@@ -2356,6 +2421,24 @@ export default function AssetsPage() {
                       />
                     </div>
                     
+                    <div>
+                      <label
+                        htmlFor="mutual-fund-purchase-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Purchase Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="mutual-fund-purchase-date"
+                        value={mutualFundPurchaseDate}
+                        onChange={(e) => setMutualFundPurchaseDate(e.target.value)}
+                        required
+                        max={new Date().toISOString().split('T')[0]}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
                     {/* Calculated Total */}
                     {mutualFundTotal > 0 && (
                       <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
@@ -2480,6 +2563,24 @@ export default function AssetsPage() {
                         min="1"
                         required
                         placeholder="Enter duration in months"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="fd-start-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Start Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="fd-start-date"
+                        value={fdStartDate}
+                        onChange={(e) => setFdStartDate(e.target.value)}
+                        required
+                        max={new Date().toISOString().split('T')[0]}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                       />
                     </div>

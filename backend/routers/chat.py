@@ -4,14 +4,14 @@ Chat/LLM API endpoints
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 import json
 import time
 import random
 import uuid
 from auth import get_current_user
 from services.llm_service import llm_service
-from database.supabase_client import supabase
+from database.supabase_client import supabase, supabase_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -29,6 +29,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     message_id: str
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: List[Dict[str, Any]]
 
 
 @router.post("/", response_model=ChatResponse)
@@ -170,6 +174,36 @@ async def chat(
         print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits")
         print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits")
         
+        # Get current message order (max message_order + 1 for this user)
+        try:
+            max_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).order("message_order", desc=True).limit(1).execute()
+            if max_order_response.data and len(max_order_response.data) > 0:
+                current_order = max_order_response.data[0].get("message_order", -1) + 1
+            else:
+                current_order = 0
+        except Exception as e:
+            print(f"Warning: Could not get max message order: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            current_order = 0
+        
+        # Save user message to database
+        try:
+            user_message_data = {
+                "user_id": user_id,
+                "role": "user",
+                "content": request.message,
+                "message_order": current_order
+            }
+            insert_response = supabase_service.table("chat_messages").insert(user_message_data).execute()
+            print(f"Successfully saved user message to database. Message ID: {insert_response.data[0]['id'] if insert_response.data else 'N/A'}")
+            current_order += 1
+        except Exception as e:
+            print(f"ERROR: Could not save user message to database: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            # Continue even if save fails - don't break the chat flow
+        
         # Convert conversation history to dict format for LLM service
         history = None
         if request.conversation_history:
@@ -258,8 +292,22 @@ When analyzing the portfolio:
             system_prompt=system_prompt
         )
         
-        # Generate unique message ID using UUID for guaranteed uniqueness
-        message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+        # Save assistant response to database
+        try:
+            assistant_message_data = {
+                "user_id": user_id,
+                "role": "assistant",
+                "content": llm_response,
+                "message_order": current_order
+            }
+            insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+            message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+            print(f"Successfully saved assistant message to database. Message ID: {message_id}")
+        except Exception as e:
+            print(f"ERROR: Could not save assistant message to database: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
         
         return ChatResponse(
             response=llm_response,
@@ -271,4 +319,95 @@ When analyzing the portfolio:
         print(f"Chat endpoint error: {str(e)}")
         print(f"Traceback: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to process chat message: {str(e)}")
+
+
+@router.get("/history", response_model=ChatHistoryResponse)
+async def get_chat_history(
+    current_user=Depends(get_current_user)
+):
+    """
+    Fetch chat history for the current user
+    """
+    try:
+        # Extract user_id safely
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
+        
+        # Ensure user_id is a valid UUID string
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid user ID format")
+        
+        # Fetch chat messages from database, ordered by message_order
+        try:
+            response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).order("message_order", desc=False).execute()
+            messages = response.data if response.data else []
+            print(f"Successfully fetched {len(messages)} chat messages for user {user_id}")
+            
+            # Format messages for frontend
+            formatted_messages = []
+            for msg in messages:
+                formatted_messages.append({
+                    "id": msg.get("id"),
+                    "role": msg.get("role"),
+                    "content": msg.get("content"),
+                    "timestamp": msg.get("created_at")
+                })
+            
+            return ChatHistoryResponse(messages=formatted_messages)
+        except Exception as e:
+            print(f"Error fetching chat history: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Chat history endpoint error: {str(e)}")
+        print(f"Traceback: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
+
+
+@router.delete("/history", status_code=204)
+async def clear_chat_history(
+    current_user=Depends(get_current_user)
+):
+    """
+    Clear all chat messages for the current user
+    """
+    try:
+        # Extract user_id safely
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
+        
+        # Ensure user_id is a valid UUID string
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid user ID format")
+        
+        # Delete all chat messages for this user
+        try:
+            delete_response = supabase_service.table("chat_messages").delete().eq("user_id", user_id).execute()
+            print(f"Successfully deleted chat messages for user {user_id}")
+        except Exception as e:
+            print(f"Error clearing chat history: {str(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Failed to clear chat history: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Clear chat history endpoint error: {str(e)}")
+        print(f"Traceback: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear chat history: {str(e)}")
 
