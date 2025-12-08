@@ -72,6 +72,26 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- Expenses table - stores daily expenses
+CREATE TABLE IF NOT EXISTS expenses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    
+    -- Expense details
+    description VARCHAR(255) NOT NULL,
+    amount DECIMAL(15, 2) NOT NULL CHECK (amount > 0),
+    currency VARCHAR(3) DEFAULT 'USD',
+    category VARCHAR(100), -- e.g., "Food", "Transport", "Shopping", "Bills", etc.
+    expense_date DATE NOT NULL, -- Date when expense was made
+    
+    -- Additional metadata
+    notes TEXT, -- User notes about the expense
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_assets_user_id ON assets(user_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
@@ -80,11 +100,16 @@ CREATE INDEX IF NOT EXISTS idx_assets_stock_symbol ON assets(stock_symbol) WHERE
 CREATE INDEX IF NOT EXISTS idx_assets_mutual_fund_code ON assets(mutual_fund_code) WHERE mutual_fund_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id ON chat_messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_order ON chat_messages(user_id, message_order);
+CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, expense_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
+CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category) WHERE category IS NOT NULL;
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies: Users can only access their own data
 
@@ -131,6 +156,23 @@ CREATE POLICY "Users can delete their own chat messages"
     ON chat_messages FOR DELETE
     USING (auth.uid() = user_id);
 
+-- Expenses policies
+CREATE POLICY "Users can view their own expenses"
+    ON expenses FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own expenses"
+    ON expenses FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own expenses"
+    ON expenses FOR UPDATE
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own expenses"
+    ON expenses FOR DELETE
+    USING (auth.uid() = user_id);
+
 -- Function to automatically create user profile on signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
@@ -161,4 +203,7 @@ CREATE TRIGGER update_assets_updated_at BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_user_profiles_updated_at BEFORE UPDATE ON user_profiles
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_expenses_updated_at BEFORE UPDATE ON expenses
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

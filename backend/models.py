@@ -274,3 +274,97 @@ class UserProfile(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Expense Models
+class ExpenseBase(BaseModel):
+    description: str = Field(..., min_length=1, max_length=255)
+    amount: Union[Decimal, str, float] = Field(..., gt=0)
+    currency: str = Field(default="USD", max_length=3)
+    category: Optional[str] = Field(None, max_length=100)
+    expense_date: date
+    notes: Optional[str] = None
+    
+    @field_validator('amount', mode='before')
+    @classmethod
+    def convert_amount(cls, v):
+        if isinstance(v, str):
+            return Decimal(v)
+        if isinstance(v, float):
+            return Decimal(str(v))
+        return v
+    
+    @field_validator('expense_date', mode='before')
+    @classmethod
+    def convert_date_field(cls, v):
+        """Convert string dates to date objects"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                from datetime import datetime
+                return datetime.strptime(v, '%Y-%m-%d').date()
+            except:
+                return None
+        return v
+
+
+class ExpenseCreate(ExpenseBase):
+    class Config:
+        json_encoders = {
+            Decimal: str
+        }
+        json_schema_extra = {
+            "example": {
+                "description": "Lunch at restaurant",
+                "amount": "25.50",
+                "currency": "USD",
+                "category": "Food",
+                "expense_date": "2024-01-15",
+                "notes": "Business lunch"
+            }
+        }
+
+
+class ExpenseUpdate(BaseModel):
+    description: Optional[str] = Field(None, min_length=1, max_length=255)
+    amount: Optional[Union[Decimal, str, float]] = Field(None, gt=0)
+    currency: Optional[str] = Field(None, max_length=3)
+    category: Optional[str] = Field(None, max_length=100)
+    expense_date: Optional[date] = None
+    notes: Optional[str] = None
+    
+    @field_validator('amount', mode='before')
+    @classmethod
+    def convert_amount(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return Decimal(v)
+        if isinstance(v, float):
+            return Decimal(str(v))
+        return v
+    
+    @field_validator('expense_date', mode='before')
+    @classmethod
+    def convert_date_field(cls, v):
+        """Convert string dates to date objects"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                from datetime import datetime
+                return datetime.strptime(v, '%Y-%m-%d').date()
+            except:
+                return None
+        return v
+
+
+class Expense(ExpenseBase):
+    id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

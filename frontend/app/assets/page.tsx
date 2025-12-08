@@ -839,6 +839,12 @@ export default function AssetsPage() {
                 <option value="europe">Europe (EUR)</option>
               </select>
             </div>
+            <button
+              onClick={() => (window.location.href = "/expenses")}
+              className="px-4 py-2 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+            >
+              Expense Tracker
+            </button>
             <button className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">
               Profile
             </button>
