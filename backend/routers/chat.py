@@ -10,6 +10,7 @@ import json
 import time
 import random
 import uuid
+import asyncio
 from auth import get_current_user, security
 from services.llm_service import llm_service
 from database.supabase_client import supabase, supabase_service, get_supabase_client_with_token
@@ -197,6 +198,13 @@ async def chat(
                 
                 print(f"Found {len(expenses)} expenses for user {user_id}")
                 
+                # Limit expenses to most recent 500 to avoid prompt size issues
+                # This prevents rate limiting from very large prompts
+                max_expenses = 500
+                if len(expenses) > max_expenses:
+                    print(f"Limiting expenses from {len(expenses)} to {max_expenses} most recent for LLM context")
+                    expenses = expenses[:max_expenses]
+                
                 # Format expenses for LLM context
                 for expense in expenses:
                     expense_info = {
@@ -244,6 +252,10 @@ async def chat(
         if context == "expenses":
             expenses_json = json.dumps(expenses_data, indent=2, default=str)
             print(f"Expenses JSON length: {len(expenses_json)} characters")
+            print(f"Number of expenses in JSON: {len(expenses_data)}")
+            # If expenses JSON is very large (>50KB), log a warning
+            if len(expenses_json) > 50000:
+                print(f"WARNING: Expenses JSON is very large ({len(expenses_json)} chars). This might cause rate limiting issues.")
         
         # Get current message order (max message_order + 1 for this user and context)
         try:
@@ -425,11 +437,69 @@ When analyzing expenses:
             system_prompt = "You are FinAI, a helpful financial assistant. How can I help you today?"
         
         # Get LLM response
-        llm_response = await llm_service.chat(
-            message=request.message,
-            conversation_history=history,
-            system_prompt=system_prompt
-        )
+        # Log prompt size for debugging
+        system_prompt_length = len(system_prompt) if system_prompt else 0
+        history_length = len(history) if history else 0
+        message_length = len(request.message) if request.message else 0
+        total_prompt_size = system_prompt_length + message_length + (history_length * 200)  # Rough estimate
+        print(f"LLM call - Context: {context}, System prompt: {system_prompt_length} chars, Message: {message_length} chars, History: {history_length} messages, Estimated total: ~{total_prompt_size} chars")
+        
+        # Retry logic for rate limit errors
+        max_retries = 3
+        retry_delay = 2  # Start with 2 seconds
+        llm_response = None
+        
+        for attempt in range(max_retries):
+            try:
+                llm_response = await llm_service.chat(
+                    message=request.message,
+                    conversation_history=history,
+                    system_prompt=system_prompt
+                )
+                
+                # Check if the response is an error message (LLM service returns error strings)
+                if llm_response and isinstance(llm_response, str):
+                    error_lower = llm_response.lower()
+                    is_rate_limit = "rate-limited" in error_lower or "rate limit" in error_lower
+                    
+                    if is_rate_limit and attempt < max_retries - 1:
+                        # Exponential backoff: 2s, 4s, 8s
+                        wait_time = retry_delay * (2 ** attempt)
+                        print(f"Rate limit detected in response (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time} seconds...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    elif is_rate_limit and attempt == max_retries - 1:
+                        # Max retries reached, return the error message
+                        print(f"Rate limit error persisted after {max_retries} attempts")
+                        break
+                
+                # Success or non-rate-limit error, exit retry loop
+                break
+                
+            except Exception as llm_error:
+                import traceback
+                error_trace = traceback.format_exc()
+                error_msg = str(llm_error)
+                error_lower = error_msg.lower()
+                
+                # Check if it's a rate limit error
+                is_rate_limit = "quota" in error_lower or "rate limit" in error_lower or "429" in error_msg
+                
+                if is_rate_limit and attempt < max_retries - 1:
+                    # Exponential backoff: 2s, 4s, 8s
+                    wait_time = retry_delay * (2 ** attempt)
+                    print(f"Rate limit exception on attempt {attempt + 1}/{max_retries}. Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # Not a rate limit error, or max retries reached
+                    print(f"ERROR in LLM call for context '{context}' (attempt {attempt + 1}/{max_retries}): {error_msg}")
+                    print(f"Traceback: {error_trace}")
+                    # Re-raise to let the LLM service handle it
+                    raise
+        
+        if llm_response is None:
+            raise HTTPException(status_code=500, detail="Failed to get LLM response after retries")
         
         # Save assistant response to database
         try:
