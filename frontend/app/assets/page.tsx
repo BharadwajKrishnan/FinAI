@@ -1668,7 +1668,7 @@ export default function AssetsPage() {
               </div>
             </div>
           }
-          right={<ChatWindow />}
+          right={<ChatWindow context="assets" />}
           defaultLeftWidth={60}
         />
       </div>

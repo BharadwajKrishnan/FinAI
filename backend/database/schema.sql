@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,
     message_order INTEGER NOT NULL, -- Order of message in conversation (for sorting)
+    context VARCHAR(20) DEFAULT 'assets', -- Context: 'assets' or 'expenses' to separate conversations
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
@@ -100,6 +101,8 @@ CREATE INDEX IF NOT EXISTS idx_assets_stock_symbol ON assets(stock_symbol) WHERE
 CREATE INDEX IF NOT EXISTS idx_assets_mutual_fund_code ON assets(mutual_fund_code) WHERE mutual_fund_code IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id ON chat_messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_order ON chat_messages(user_id, message_order);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_context ON chat_messages(user_id, context);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_context_order ON chat_messages(user_id, context, message_order);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, expense_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);

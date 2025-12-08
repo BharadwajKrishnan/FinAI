@@ -25,35 +25,75 @@ async def get_expenses(
     """Get all expenses for the current user with optional filters"""
     try:
         user_id = current_user.user.id if hasattr(current_user, 'user') else current_user.id
-        query = supabase.table("expenses").select("*").eq("user_id", user_id)
+        
+        # Use service role client (bypasses RLS, user already validated via get_current_user)
+        # This avoids JWT expiration issues
+        supabase_client = supabase_service
+        query = supabase_client.table("expenses").select("*").eq("user_id", user_id)
         
         if start_date:
             query = query.gte("expense_date", start_date.isoformat())
         if end_date:
             query = query.lte("expense_date", end_date.isoformat())
-        if year:
-            # Filter by year using date range
-            start_year = date(year, 1, 1)
-            end_year = date(year, 12, 31)
-            query = query.gte("expense_date", start_year.isoformat())
-            query = query.lte("expense_date", end_year.isoformat())
+        
+        # Handle month/year filtering - month filter takes precedence
         if month and year:
             # Filter by specific month and year
             start_month = date(year, month, 1)
-            # Get last day of month
+            # Get first day of next month for exclusive upper bound
             if month == 12:
                 end_month = date(year + 1, 1, 1)
             else:
                 end_month = date(year, month + 1, 1)
-            query = query.gte("expense_date", start_month.isoformat())
-            query = query.lt("expense_date", end_month.isoformat())
+            start_str = start_month.isoformat()
+            end_str = end_month.isoformat()
+            print(f"Filtering expenses: year={year}, month={month}, start_date={start_str}, end_date={end_str}")
+            query = query.gte("expense_date", start_str)
+            query = query.lt("expense_date", end_str)
+        elif year:
+            # Filter by year only (when month is not specified)
+            start_year = date(year, 1, 1)
+            end_year = date(year, 12, 31)
+            query = query.gte("expense_date", start_year.isoformat())
+            query = query.lte("expense_date", end_year.isoformat())
+        
         if category:
             query = query.eq("category", category)
         
         query = query.order("expense_date", desc=True)
-        response = query.execute()
-        return response.data
+        
+        # Debug: Log the query before execution
+        print(f"Executing query for user_id={user_id}, year={year}, month={month}")
+        
+        try:
+            response = query.execute()
+            expenses = response.data if response.data else []
+            
+            # Debug logging
+            print(f"Expenses query - year={year}, month={month}, category={category}")
+            print(f"Found {len(expenses)} expenses matching filters")
+            if len(expenses) > 0:
+                print(f"Sample expense date: {expenses[0].get('expense_date')}")
+            else:
+                # If no expenses found, try fetching all expenses for this user to debug
+                all_expenses_query = supabase_client.table("expenses").select("*").eq("user_id", user_id).execute()
+                all_expenses = all_expenses_query.data if all_expenses_query.data else []
+                print(f"DEBUG: Total expenses for user: {len(all_expenses)}")
+                if len(all_expenses) > 0:
+                    print(f"DEBUG: Sample expense dates: {[e.get('expense_date') for e in all_expenses[:5]]}")
+            
+            return expenses
+        except Exception as query_error:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"ERROR executing expenses query: {str(query_error)}")
+            print(f"Traceback: {error_trace}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch expenses: {str(query_error)}")
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"ERROR in get_expenses: {str(e)}")
+        print(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch expenses: {str(e)}")
 
 
@@ -66,6 +106,9 @@ async def get_expense_summary(
     try:
         user_id = current_user.user.id if hasattr(current_user, 'user') else current_user.id
         
+        # Use service role client (bypasses RLS, user already validated via get_current_user)
+        supabase_client = supabase_service
+        
         # Default to current year if not specified
         if not year:
             from datetime import datetime
@@ -75,7 +118,7 @@ async def get_expense_summary(
         start_date = date(year, 1, 1)
         end_date = date(year, 12, 31)
         
-        query = supabase.table("expenses").select("*").eq("user_id", user_id)
+        query = supabase_client.table("expenses").select("*").eq("user_id", user_id)
         query = query.gte("expense_date", start_date.isoformat())
         query = query.lte("expense_date", end_date.isoformat())
         query = query.order("expense_date", desc=False)

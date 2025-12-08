@@ -10,7 +10,11 @@ interface Message {
   timestamp: Date;
 }
 
-export default function ChatWindow() {
+interface ChatWindowProps {
+  context?: "assets" | "expenses"; // Context to determine which system prompt to use
+}
+
+export default function ChatWindow({ context = "assets" }: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -36,7 +40,7 @@ export default function ChatWindow() {
           return; // User not authenticated, skip loading history
         }
 
-        const response = await fetch("/api/chat", {
+        const response = await fetch(`/api/chat?context=${context}`, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -73,14 +77,14 @@ export default function ChatWindow() {
     };
 
     loadChatHistory();
-  }, []);
+  }, [context]); // Reload history when context changes
 
   const clearChat = async () => {
     try {
       const accessToken = localStorage.getItem("access_token");
       if (accessToken) {
-        // Clear chat history from database
-        await fetch("/api/chat", {
+        // Clear chat history from database for current context
+        await fetch(`/api/chat?context=${context}`, {
           method: "DELETE",
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -152,6 +156,7 @@ export default function ChatWindow() {
         body: JSON.stringify({
           message: userMessage.content,
           conversation_history: conversationHistory,
+          context: context, // Pass context to backend
         }),
       }).catch((fetchError) => {
         // Handle network errors
@@ -241,7 +246,9 @@ export default function ChatWindow() {
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Finance Assistant</h2>
+            <h2 className="text-lg font-semibold text-gray-900">
+              {context === "expenses" ? "Expense Tracker Assistant" : "Financial Assistant"}
+            </h2>
             <p className="text-xs text-gray-500">Ask me anything about your finances</p>
           </div>
           <button

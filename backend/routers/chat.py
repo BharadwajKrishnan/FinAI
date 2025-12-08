@@ -2,16 +2,17 @@
 Chat/LLM API endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import json
 import time
 import random
 import uuid
-from auth import get_current_user
+from auth import get_current_user, security
 from services.llm_service import llm_service
-from database.supabase_client import supabase, supabase_service
+from database.supabase_client import supabase, supabase_service, get_supabase_client_with_token
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -24,6 +25,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     conversation_history: Optional[List[ChatMessage]] = None
+    context: Optional[str] = "assets"  # "assets" or "expenses" to determine which system prompt to use
 
 
 class ChatResponse(BaseModel):
@@ -38,7 +40,8 @@ class ChatHistoryResponse(BaseModel):
 @router.post("/", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    current_user=Depends(get_current_user)
+    current_user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
     Handle chat messages and return LLM response
@@ -56,127 +59,195 @@ async def chat(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid user ID format")
         
-        # Fetch user's portfolio from database
+        # Get context from request (default to "assets")
+        # Handle both None and empty string cases
+        context_value = request.context
+        if not context_value or context_value == "":
+            context = "assets"
+        else:
+            context = str(context_value).lower().strip()  # Normalize to lowercase and strip whitespace
+        
+        print(f"Chat context received from request: '{request.context}' (type: {type(request.context)})")
+        print(f"Chat context being used: '{context}' (type: {type(context)})")
+        print(f"Context comparison - context == 'expenses': {context == 'expenses'}")
+        print(f"Context comparison - context == 'assets': {context == 'assets'}")
+        
+        # Fetch user's portfolio from database (only if context is "assets")
         portfolio_data = {}
-        try:
-            print(f"Fetching portfolio for user_id: {user_id}")
-            # Fetch all assets (both active and inactive, but prefer active)
-            # First try with is_active filter
-            response = supabase.table("assets").select("*").eq("user_id", user_id).eq("is_active", True).order("created_at", desc=False).execute()
-            assets = response.data if response.data else []
-            
-            # If no active assets found, try without the filter (in case is_active is not set)
-            if len(assets) == 0:
-                print(f"No active assets found, trying without is_active filter...")
-                response = supabase.table("assets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
+        if context == "assets":
+            try:
+                print(f"Fetching portfolio for user_id: {user_id}")
+                # Fetch all assets (both active and inactive, but prefer active)
+                # First try with is_active filter
+                response = supabase.table("assets").select("*").eq("user_id", user_id).eq("is_active", True).order("created_at", desc=False).execute()
                 assets = response.data if response.data else []
-            
-            print(f"Found {len(assets)} assets for user {user_id}")
-            if len(assets) > 0:
-                print(f"Sample asset: {json.dumps(assets[0], indent=2, default=str)}")
-            
-            # Organize assets by market (currency) and then by type
-            portfolio_data = {
-                "india": {
-                    "currency": "INR",
-                    "stocks": [],
-                    "mutual_funds": [],
-                    "bank_accounts": [],
-                    "fixed_deposits": []
-                },
-                "europe": {
-                    "currency": "EUR",
-                    "stocks": [],
-                    "mutual_funds": [],
-                    "bank_accounts": [],
-                    "fixed_deposits": []
-                }
-            }
-            
-            for asset in assets:
-                currency = asset.get("currency", "USD")
-                # Determine market based on currency
-                market = "india" if currency == "INR" else "europe" if currency == "EUR" else "other"
                 
-                # Skip assets with other currencies (or add to a separate section if needed)
-                if market == "other":
-                    continue
+                # If no active assets found, try without the filter (in case is_active is not set)
+                if len(assets) == 0:
+                    print(f"No active assets found, trying without is_active filter...")
+                    response = supabase.table("assets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
+                    assets = response.data if response.data else []
                 
-                asset_info = {
-                    "id": asset.get("id"),
-                    "name": asset.get("name"),
-                    "currency": currency,
-                    "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0,
-                    "created_at": asset.get("created_at"),
-                    "updated_at": asset.get("updated_at")
+                print(f"Found {len(assets)} assets for user {user_id}")
+                if len(assets) > 0:
+                    print(f"Sample asset: {json.dumps(assets[0], indent=2, default=str)}")
+                
+                # Organize assets by market (currency) and then by type
+                portfolio_data = {
+                    "india": {
+                        "currency": "INR",
+                        "stocks": [],
+                        "mutual_funds": [],
+                        "bank_accounts": [],
+                        "fixed_deposits": []
+                    },
+                    "europe": {
+                        "currency": "EUR",
+                        "stocks": [],
+                        "mutual_funds": [],
+                        "bank_accounts": [],
+                        "fixed_deposits": []
+                    }
                 }
                 
-                asset_type = asset.get("type")
-                if asset_type == "stock":
-                    asset_info.update({
-                        "symbol": asset.get("stock_symbol"),
-                        "quantity": float(asset.get("quantity", 0)) if asset.get("quantity") else 0,
-                        "purchase_price": float(asset.get("purchase_price", 0)) if asset.get("purchase_price") else 0,
-                        "current_price": float(asset.get("current_price", 0)) if asset.get("current_price") else 0,
-                        "purchase_date": asset.get("purchase_date")
-                    })
-                    portfolio_data[market]["stocks"].append(asset_info)
-                elif asset_type == "mutual_fund":
-                    asset_info.update({
-                        "nav": float(asset.get("nav", 0)) if asset.get("nav") else 0,
-                        "units": float(asset.get("units", 0)) if asset.get("units") else 0,
-                        "nav_purchase_date": asset.get("nav_purchase_date")
-                    })
-                    portfolio_data[market]["mutual_funds"].append(asset_info)
-                elif asset_type == "bank_account":
-                    asset_info.update({
-                        "bank_name": asset.get("bank_name"),
-                        "account_number": asset.get("account_number"),
-                        "account_type": asset.get("account_type"),
-                        "balance": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
-                    })
-                    portfolio_data[market]["bank_accounts"].append(asset_info)
-                elif asset_type == "fixed_deposit":
-                    asset_info.update({
-                        "bank_name": asset.get("name"),
-                        "principal_amount": float(asset.get("principal_amount", 0)) if asset.get("principal_amount") else 0,
-                        "interest_rate": float(asset.get("fd_interest_rate", 0)) if asset.get("fd_interest_rate") else 0,
-                        "start_date": asset.get("start_date"),
-                        "maturity_date": asset.get("maturity_date"),
-                        "maturity_amount": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
-                    })
-                    portfolio_data[market]["fixed_deposits"].append(asset_info)
-        except Exception as portfolio_error:
-            # If portfolio fetch fails, continue without portfolio data
-            import traceback
-            print(f"Warning: Could not fetch portfolio data: {str(portfolio_error)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            portfolio_data = {
-                "india": {
-                    "currency": "INR",
-                    "stocks": [],
-                    "mutual_funds": [],
-                    "bank_accounts": [],
-                    "fixed_deposits": []
-                },
-                "europe": {
-                    "currency": "EUR",
-                    "stocks": [],
-                    "mutual_funds": [],
-                    "bank_accounts": [],
-                    "fixed_deposits": []
+                for asset in assets:
+                    currency = asset.get("currency", "USD")
+                    # Determine market based on currency
+                    market = "india" if currency == "INR" else "europe" if currency == "EUR" else "other"
+                    
+                    # Skip assets with other currencies (or add to a separate section if needed)
+                    if market == "other":
+                        continue
+                    
+                    asset_info = {
+                        "id": asset.get("id"),
+                        "name": asset.get("name"),
+                        "currency": currency,
+                        "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0,
+                        "created_at": asset.get("created_at"),
+                        "updated_at": asset.get("updated_at")
+                    }
+                    
+                    asset_type = asset.get("type")
+                    if asset_type == "stock":
+                        asset_info.update({
+                            "symbol": asset.get("stock_symbol"),
+                            "quantity": float(asset.get("quantity", 0)) if asset.get("quantity") else 0,
+                            "purchase_price": float(asset.get("purchase_price", 0)) if asset.get("purchase_price") else 0,
+                            "current_price": float(asset.get("current_price", 0)) if asset.get("current_price") else 0,
+                            "purchase_date": asset.get("purchase_date")
+                        })
+                        portfolio_data[market]["stocks"].append(asset_info)
+                    elif asset_type == "mutual_fund":
+                        asset_info.update({
+                            "nav": float(asset.get("nav", 0)) if asset.get("nav") else 0,
+                            "units": float(asset.get("units", 0)) if asset.get("units") else 0,
+                            "nav_purchase_date": asset.get("nav_purchase_date")
+                        })
+                        portfolio_data[market]["mutual_funds"].append(asset_info)
+                    elif asset_type == "bank_account":
+                        asset_info.update({
+                            "bank_name": asset.get("bank_name"),
+                            "account_number": asset.get("account_number"),
+                            "account_type": asset.get("account_type"),
+                            "balance": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
+                        })
+                        portfolio_data[market]["bank_accounts"].append(asset_info)
+                    elif asset_type == "fixed_deposit":
+                        asset_info.update({
+                            "bank_name": asset.get("name"),
+                            "principal_amount": float(asset.get("principal_amount", 0)) if asset.get("principal_amount") else 0,
+                            "interest_rate": float(asset.get("fd_interest_rate", 0)) if asset.get("fd_interest_rate") else 0,
+                            "start_date": asset.get("start_date"),
+                            "maturity_date": asset.get("maturity_date"),
+                            "maturity_amount": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
+                        })
+                        portfolio_data[market]["fixed_deposits"].append(asset_info)
+            except Exception as portfolio_error:
+                # If portfolio fetch fails, continue without portfolio data
+                import traceback
+                print(f"Warning: Could not fetch portfolio data: {str(portfolio_error)}")
+                print(f"Traceback: {traceback.format_exc()}")
+                portfolio_data = {
+                    "india": {
+                        "currency": "INR",
+                        "stocks": [],
+                        "mutual_funds": [],
+                        "bank_accounts": [],
+                        "fixed_deposits": []
+                    },
+                    "europe": {
+                        "currency": "EUR",
+                        "stocks": [],
+                        "mutual_funds": [],
+                        "bank_accounts": [],
+                        "fixed_deposits": []
+                    }
                 }
-            }
         
-        # Convert portfolio to JSON string
-        portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
-        print(f"Portfolio JSON length: {len(portfolio_json)} characters")
-        print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits")
-        print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits")
+        # Fetch user's expenses from database (only if context is "expenses")
+        expenses_data = []
+        if context == "expenses":
+            try:
+                # Use service role client (bypasses RLS, user already validated via get_current_user)
+                # This avoids JWT expiration issues
+                print(f"Fetching expenses for user_id: {user_id}")
+                expenses_response = supabase_service.table("expenses").select("*").eq("user_id", user_id).order("expense_date", desc=True).execute()
+                expenses = expenses_response.data if expenses_response.data else []
+                
+                print(f"Found {len(expenses)} expenses for user {user_id}")
+                
+                # Format expenses for LLM context
+                for expense in expenses:
+                    expense_info = {
+                        "id": expense.get("id"),
+                        "description": expense.get("description"),
+                        "amount": float(expense.get("amount", 0)) if expense.get("amount") else 0,
+                        "currency": expense.get("currency", "USD"),
+                        "category": expense.get("category"),
+                        "expense_date": expense.get("expense_date"),
+                        "notes": expense.get("notes"),
+                        "created_at": expense.get("created_at")
+                    }
+                    expenses_data.append(expense_info)
+                
+                # Group expenses by currency for easier analysis
+                expenses_by_currency = {}
+                for expense in expenses_data:
+                    currency = expense.get("currency", "USD")
+                    if currency not in expenses_by_currency:
+                        expenses_by_currency[currency] = []
+                    expenses_by_currency[currency].append(expense)
+                
+                print(f"Expenses grouped by currency: {list(expenses_by_currency.keys())}")
+                for currency, exp_list in expenses_by_currency.items():
+                    total = sum(e.get("amount", 0) for e in exp_list)
+                    print(f"  {currency}: {len(exp_list)} expenses, total: {total}")
+                    
+            except Exception as expenses_error:
+                # If expenses fetch fails, continue without expense data
+                import traceback
+                print(f"Warning: Could not fetch expense data: {str(expenses_error)}")
+                print(f"Traceback: {traceback.format_exc()}")
+                expenses_data = []
         
-        # Get current message order (max message_order + 1 for this user)
+        # Convert portfolio to JSON string (only if context is "assets")
+        portfolio_json = ""
+        if context == "assets":
+            portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
+            print(f"Portfolio JSON length: {len(portfolio_json)} characters")
+            print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits")
+            print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits")
+        
+        # Convert expenses to JSON string (only if context is "expenses")
+        expenses_json = ""
+        if context == "expenses":
+            expenses_json = json.dumps(expenses_data, indent=2, default=str)
+            print(f"Expenses JSON length: {len(expenses_json)} characters")
+        
+        # Get current message order (max message_order + 1 for this user and context)
         try:
-            max_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).order("message_order", desc=True).limit(1).execute()
+            max_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).eq("context", context).order("message_order", desc=True).limit(1).execute()
             if max_order_response.data and len(max_order_response.data) > 0:
                 current_order = max_order_response.data[0].get("message_order", -1) + 1
             else:
@@ -193,7 +264,8 @@ async def chat(
                 "user_id": user_id,
                 "role": "user",
                 "content": request.message,
-                "message_order": current_order
+                "message_order": current_order,
+                "context": context  # Store context with message
             }
             insert_response = supabase_service.table("chat_messages").insert(user_message_data).execute()
             print(f"Successfully saved user message to database. Message ID: {insert_response.data[0]['id'] if insert_response.data else 'N/A'}")
@@ -212,12 +284,17 @@ async def chat(
                 for msg in request.conversation_history
             ]
         
-        # System prompt for finance assistant with portfolio data
-        # Log portfolio data before creating system prompt
-        print(f"Creating system prompt with portfolio data...")
-        print(f"Portfolio JSON preview (first 500 chars): {portfolio_json[:500]}")
+        # Create system prompt based on context
+        print(f"DEBUG: About to create system prompt. Context value: '{context}', type: {type(context)}")
+        print(f"DEBUG: context == 'assets': {context == 'assets'}")
+        print(f"DEBUG: context == 'expenses': {context == 'expenses'}")
         
-        system_prompt = f"""<Role>
+        if context == "assets":
+            # System prompt for Financial Assets tab
+            print(f"Creating system prompt for ASSETS context...")
+            print(f"Portfolio JSON preview (first 500 chars): {portfolio_json[:500] if portfolio_json else 'No portfolio'}")
+            
+            system_prompt = f"""<Role>
 You are FinAI, an intelligent financial advisor. Your purpose is to help users manage their finances, understand markets, and make informed investment decisions. You must always communicate clearly, accurately, and professionally while providing factual, data-based insights.
 </Role>
 
@@ -285,6 +362,68 @@ When analyzing the portfolio:
 6. Note that India and Europe markets are separate - assets in one market do not affect the other
 </Current_Portfolio>"""
         
+        elif context == "expenses":
+            # System prompt for Expense Tracker tab
+            print(f"Creating system prompt for EXPENSES context...")
+            print(f"Expenses JSON preview (first 500 chars): {expenses_json[:500] if expenses_json else 'No expenses'}")
+            print(f"Number of expenses: {len(expenses_data)}")
+            
+            system_prompt = f"""<Role>
+You are FinAI, an intelligent expense tracking and budgeting assistant. Your purpose is to help users track their expenses, analyze spending patterns, and make informed budgeting decisions. You must always communicate clearly, accurately, and professionally while providing factual, data-based insights.
+</Role>
+
+<Purpose>
+1. Help users understand their spending patterns and trends over time.
+2. Analyze expenses by category, month, year, or currency.
+3. Provide budgeting recommendations and identify areas for cost optimization.
+4. Calculate expense totals, averages, and comparisons as requested.
+5. Deliver actionable insights with clear explanations.
+</Purpose>
+
+<Behavior>
+1. Maintain a neutral, objective, and professional tone at all times.
+2. Avoid judgmental language about spending habits.
+3. Use numerical lists, tables, or charts to summarize expense information effectively.
+4. Clearly state data limitations or uncertain conditions when applicable.
+5. Uphold user trust and confidentiality in all interactions.
+</Behavior>
+
+<Example_Introduction>
+Hello, I'm FinAI — your expense tracking assistant. I can help you analyze your spending patterns, track expenses by category, and provide budgeting insights. How can I assist you with your expenses today?
+</Example_Introduction>
+
+<Current_Expenses>
+The user's expense data is provided below in JSON format. Use this data to answer questions about spending patterns, budgeting, and expense analysis:
+
+```json
+{expenses_json}
+```
+
+Each expense contains:
+- description: What the expense was for
+- amount: The expense amount
+- currency: The currency (EUR or INR)
+- category: Expense category (Food, Transport, Shopping, Bills, Entertainment, Healthcare, Education, Travel, Other, or null)
+- expense_date: Date when the expense was made (YYYY-MM-DD format)
+- notes: Additional notes about the expense
+
+When analyzing expenses:
+1. Calculate total expenses by currency, category, month, or year as requested
+2. Identify spending patterns and trends over time
+3. Provide insights on budgeting and expense management
+4. Compare spending across different categories
+5. Help identify areas where spending can be optimized
+6. Note that expenses are in different currencies (EUR and INR) - analyze them separately or convert if needed
+7. Group expenses by month/year when providing monthly or yearly summaries
+8. When asked about specific time periods, filter expenses by the expense_date field
+9. Provide clear breakdowns with totals, averages, and percentages when relevant
+10. Suggest practical budgeting tips based on the user's spending patterns
+</Current_Expenses>"""
+        
+        else:
+            # Default/fallback prompt
+            system_prompt = "You are FinAI, a helpful financial assistant. How can I help you today?"
+        
         # Get LLM response
         llm_response = await llm_service.chat(
             message=request.message,
@@ -298,7 +437,8 @@ When analyzing the portfolio:
                 "user_id": user_id,
                 "role": "assistant",
                 "content": llm_response,
-                "message_order": current_order
+                "message_order": current_order,
+                "context": context  # Store context with message
             }
             insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
             message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
@@ -323,10 +463,11 @@ When analyzing the portfolio:
 
 @router.get("/history", response_model=ChatHistoryResponse)
 async def get_chat_history(
+    context: Optional[str] = Query("assets", description="Context filter: 'assets' or 'expenses'"),
     current_user=Depends(get_current_user)
 ):
     """
-    Fetch chat history for the current user
+    Fetch chat history for the current user, filtered by context
     """
     try:
         # Extract user_id safely
@@ -341,9 +482,17 @@ async def get_chat_history(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid user ID format")
         
-        # Fetch chat messages from database, ordered by message_order
+        # Normalize context
+        if not context or context == "":
+            context = "assets"
+        else:
+            context = str(context).lower().strip()
+        
+        print(f"Fetching chat history for user {user_id} with context: {context}")
+        
+        # Fetch chat messages from database, filtered by context and ordered by message_order
         try:
-            response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).order("message_order", desc=False).execute()
+            response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).eq("context", context).order("message_order", desc=False).execute()
             messages = response.data if response.data else []
             print(f"Successfully fetched {len(messages)} chat messages for user {user_id}")
             
@@ -375,10 +524,11 @@ async def get_chat_history(
 
 @router.delete("/history", status_code=204)
 async def clear_chat_history(
+    context: Optional[str] = Query("assets", description="Context filter: 'assets' or 'expenses'"),
     current_user=Depends(get_current_user)
 ):
     """
-    Clear all chat messages for the current user
+    Clear chat messages for the current user, filtered by context
     """
     try:
         # Extract user_id safely
@@ -393,9 +543,17 @@ async def clear_chat_history(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid user ID format")
         
-        # Delete all chat messages for this user
+        # Normalize context
+        if not context or context == "":
+            context = "assets"
+        else:
+            context = str(context).lower().strip()
+        
+        print(f"Clearing chat history for user {user_id} with context: {context}")
+        
+        # Delete chat messages for this user and context
         try:
-            delete_response = supabase_service.table("chat_messages").delete().eq("user_id", user_id).execute()
+            delete_response = supabase_service.table("chat_messages").delete().eq("user_id", user_id).eq("context", context).execute()
             print(f"Successfully deleted chat messages for user {user_id}")
         except Exception as e:
             print(f"Error clearing chat history: {str(e)}")

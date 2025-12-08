@@ -12,12 +12,16 @@ export async function GET(request: NextRequest) {
     }
 
     const token = authHeader.substring(7);
+    
+    // Get context from query parameters
+    const { searchParams } = new URL(request.url);
+    const context = searchParams.get("context") || "assets";
 
     // Call Python backend API
     const backendUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     
     try {
-      const backendResponse = await fetch(`${backendUrl}/api/chat/history`, {
+      const backendResponse = await fetch(`${backendUrl}/api/chat/history?context=${context}`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -79,12 +83,16 @@ export async function DELETE(request: NextRequest) {
     }
 
     const token = authHeader.substring(7);
+    
+    // Get context from query parameters
+    const { searchParams } = new URL(request.url);
+    const context = searchParams.get("context") || "assets";
 
     // Call Python backend API
     const backendUrl = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     
     try {
-      const backendResponse = await fetch(`${backendUrl}/api/chat/history`, {
+      const backendResponse = await fetch(`${backendUrl}/api/chat/history?context=${context}`, {
         method: "DELETE",
         headers: {
           "Content-Type": "application/json",
@@ -134,7 +142,11 @@ export async function DELETE(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, conversation_history } = body;
+    const { message, conversation_history, context } = body;
+
+    // Debug logging
+    console.log("Frontend API - Received context:", context);
+    console.log("Frontend API - Context type:", typeof context);
 
     // Validate input
     if (!message) {
@@ -168,6 +180,7 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           message,
           conversation_history: conversation_history || [],
+          context: context || "assets", // Pass context to backend, default to assets
         }),
       });
 

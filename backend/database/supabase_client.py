@@ -40,9 +40,8 @@ def get_supabase_client_with_token(access_token: str) -> Client:
     """
     # Create a new client instance
     client = create_client(supabase_url, supabase_key)
-    # Set the access token in the postgrest client's headers
+    # Set the access token in the postgrest client's auth header
     # This makes auth.uid() available in RLS policies
-    # Use the postgrest client's session method to set the token
-    client.postgrest.session.auth(access_token)
+    client.postgrest.auth(access_token)
     return client
 
