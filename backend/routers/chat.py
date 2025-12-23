@@ -78,22 +78,30 @@ async def chat(
         if context == "assets":
             try:
                 print(f"Fetching portfolio for user_id: {user_id}")
-                # Fetch all assets (both active and inactive, but prefer active)
-                # First try with is_active filter
-                response = supabase.table("assets").select("*").eq("user_id", user_id).eq("is_active", True).order("created_at", desc=False).execute()
-                assets = response.data if response.data else []
                 
-                # If no active assets found, try without the filter (in case is_active is not set)
-                if len(assets) == 0:
-                    print(f"No active assets found, trying without is_active filter...")
-                    response = supabase.table("assets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
-                    assets = response.data if response.data else []
+                # Fetch family members first
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members = {str(member["id"]): member for member in (family_members_response.data if family_members_response.data else [])}
+                print(f"Found {len(family_members)} family members for user {user_id}")
                 
-                print(f"Found {len(assets)} assets for user {user_id}")
+                # Use service role client (bypasses RLS, user already validated via get_current_user)
+                # This avoids JWT expiration issues
+                supabase_client = supabase_service
+                
+                # Fetch all assets (similar to assets endpoint - fetch all and filter in Python)
+                # This handles NULL is_active values for backward compatibility
+                response = supabase_client.table("assets").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()
+                all_assets = response.data if response.data else []
+                
+                # Filter by is_active - include assets where is_active is True or NULL (NULL treated as active)
+                assets = [a for a in all_assets if a.get("is_active") is True or a.get("is_active") is None]
+                
+                print(f"Found {len(assets)} assets for user {user_id} (out of {len(all_assets)} total)")
                 if len(assets) > 0:
                     print(f"Sample asset: {json.dumps(assets[0], indent=2, default=str)}")
                 
                 # Organize assets by market (currency) and then by type
+                # Also organize by family member for better context
                 portfolio_data = {
                     "india": {
                         "currency": "INR",
@@ -102,7 +110,8 @@ async def chat(
                         "bank_accounts": [],
                         "fixed_deposits": [],
                         "insurance_policies": [],
-                        "commodities": []
+                        "commodities": [],
+                        "by_family_member": {}  # Will be populated after processing all assets
                     },
                     "europe": {
                         "currency": "EUR",
@@ -111,7 +120,8 @@ async def chat(
                         "bank_accounts": [],
                         "fixed_deposits": [],
                         "insurance_policies": [],
-                        "commodities": []
+                        "commodities": [],
+                        "by_family_member": {}  # Will be populated after processing all assets
                     }
                 }
                 
@@ -124,13 +134,26 @@ async def chat(
                     if market == "other":
                         continue
                     
+                    # Get family member information
+                    family_member_id = asset.get("family_member_id")
+                    family_member_info = None
+                    if family_member_id:
+                        member = family_members.get(str(family_member_id))
+                        if member:
+                            family_member_info = {
+                                "id": member.get("id"),
+                                "name": member.get("name"),
+                                "relationship": member.get("relationship")
+                            }
+                    
                     asset_info = {
                         "id": asset.get("id"),
                         "name": asset.get("name"),
                         "currency": currency,
                         "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0,
                         "created_at": asset.get("created_at"),
-                        "updated_at": asset.get("updated_at")
+                        "updated_at": asset.get("updated_at"),
+                        "family_member": family_member_info if family_member_info else {"name": "Self", "relationship": "Self"}
                     }
                     
                     asset_type = asset.get("type")
@@ -191,6 +214,30 @@ async def chat(
                             "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
                         })
                         portfolio_data[market]["commodities"].append(asset_info)
+                
+                # Organize assets by family member for better LLM context
+                for market in ["india", "europe"]:
+                    family_member_assets = {}
+                    for asset_type in ["stocks", "mutual_funds", "bank_accounts", "fixed_deposits", "insurance_policies", "commodities"]:
+                        for asset in portfolio_data[market][asset_type]:
+                            family_member_name = asset.get("family_member", {}).get("name", "Self")
+                            if family_member_name not in family_member_assets:
+                                family_member_assets[family_member_name] = {
+                                    "stocks": [],
+                                    "mutual_funds": [],
+                                    "bank_accounts": [],
+                                    "fixed_deposits": [],
+                                    "insurance_policies": [],
+                                    "commodities": []
+                                }
+                            family_member_assets[family_member_name][asset_type].append(asset)
+                    portfolio_data[market]["by_family_member"] = family_member_assets
+                    
+                    # Print summary by family member
+                    print(f"Portfolio by family member for {market}:")
+                    for member_name, assets_by_type in family_member_assets.items():
+                        total_assets = sum(len(assets_by_type[at]) for at in ["stocks", "mutual_funds", "bank_accounts", "fixed_deposits", "insurance_policies", "commodities"])
+                        print(f"  {member_name}: {total_assets} assets")
             except Exception as portfolio_error:
                 # If portfolio fetch fails, continue without portfolio data
                 import traceback
@@ -204,7 +251,8 @@ async def chat(
                         "bank_accounts": [],
                         "fixed_deposits": [],
                         "insurance_policies": [],
-                        "commodities": []
+                        "commodities": [],
+                        "by_family_member": {}
                     },
                     "europe": {
                         "currency": "EUR",
@@ -213,7 +261,8 @@ async def chat(
                         "bank_accounts": [],
                         "fixed_deposits": [],
                         "insurance_policies": [],
-                        "commodities": []
+                        "commodities": [],
+                        "by_family_member": {}
                     }
                 }
         
@@ -381,6 +430,7 @@ Caution: Financial markets carry inherent risks. This recommendation is provided
 3. Use numerical lists, tables, or charts to summarize information effectively.
 4. Clearly state data limitations or uncertain conditions when applicable.
 5. Uphold user trust and confidentiality in all interactions.
+6. Introducce yourself only once in the beginning of the conversation. Do not repeat yourself.
 </Behavior>
 
 <Example_Introduction>
@@ -396,13 +446,25 @@ The user's current portfolio data is provided below in JSON format. Use this dat
 
 The portfolio is organized by market (India/Europe) and then by asset type. Each market has its own currency (INR for India, EUR for Europe).
 
+IMPORTANT: The portfolio includes assets belonging to different family members. Each asset has a "family_member" field that indicates:
+- If "family_member.name" is "Self", the asset belongs to the user themselves
+- Otherwise, it shows the family member's name and relationship (e.g., "John (Father)", "Sarah (Daughter)")
+
+The portfolio data also includes a "by_family_member" section for each market that organizes all assets by family member. Use this information to:
+1. Provide insights specific to each family member's portfolio
+2. Answer questions about which family member owns which assets
+3. Calculate net worth or asset allocation for individual family members when requested
+4. Understand the complete family financial picture when providing overall portfolio analysis
+
 When analyzing the portfolio:
 1. Consider the asset allocation across different types (stocks, mutual funds, bank accounts, fixed deposits, insurance policies, commodities) within each market
 2. Analyze the distribution across different markets/currencies (INR for India, EUR for Europe)
 3. Calculate total portfolio value and breakdown by asset type for each market separately
-4. Provide insights on diversification, risk exposure, and potential improvements for each market
-5. Reference specific assets by name and market when making recommendations
-6. Note that India and Europe markets are separate - assets in one market do not affect the other
+4. When asked about specific family members, use the "by_family_member" data to provide family member-specific insights
+5. Provide insights on diversification, risk exposure, and potential improvements for each market
+6. Reference specific assets by name, market, and family member when making recommendations
+7. Note that India and Europe markets are separate - assets in one market do not affect the other
+8. When calculating net worth or asset allocation, you can provide both overall family net worth and individual family member net worth
 </Current_Portfolio>"""
         
         elif context == "expenses":
