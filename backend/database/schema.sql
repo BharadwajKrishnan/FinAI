@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS assets (
     
     -- Asset identification
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(50) NOT NULL CHECK (type IN ('stock', 'mutual_fund', 'bank_account', 'fixed_deposit', 'insurance_policy')),
+    type VARCHAR(50) NOT NULL CHECK (type IN ('stock', 'mutual_fund', 'bank_account', 'fixed_deposit', 'insurance_policy', 'commodity')),
     
     -- Common fields for all asset types
     current_value DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS assets (
     premium DECIMAL(15, 2), -- Premium amount
     nominee VARCHAR(255), -- Nominee name
     premium_payment_date DATE, -- Next premium payment date
+    
+    -- Commodity specific fields (NULL for other types)
+    commodity_name VARCHAR(255), -- Name of the commodity (e.g., "Gold", "Silver")
+    form VARCHAR(50), -- Form of commodity (e.g., "ETF", "Physical", "Coin")
+    commodity_quantity DECIMAL(15, 4), -- Quantity of commodity
+    commodity_units VARCHAR(20), -- Units of measurement (e.g., "grams", "karat", "units")
+    commodity_purchase_date DATE, -- Date when commodity was purchased
+    commodity_purchase_price DECIMAL(15, 4), -- Purchase price per unit
     
     -- Additional metadata
     notes TEXT, -- User notes about the asset

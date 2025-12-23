@@ -95,7 +95,7 @@ async def create_asset(
         
         # Convert date objects to strings for Supabase
         date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
-                       'issue_date', 'date_of_maturity', 'premium_payment_date']
+                       'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
         for field in date_fields:
             if field in asset_data and asset_data[field]:
                 asset_data[field] = asset_data[field].isoformat() if hasattr(asset_data[field], 'isoformat') else asset_data[field]
@@ -104,7 +104,7 @@ async def create_asset(
         decimal_fields = [
             'current_value', 'quantity', 'purchase_price', 'current_price',
             'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
-            'amount_insured', 'premium'
+            'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price'
         ]
         for field in decimal_fields:
             if field in asset_data and asset_data[field] is not None:
@@ -190,7 +190,7 @@ async def update_asset(asset_id: str, asset: AssetUpdate, current_user=Depends(g
         
         # Convert date objects to strings
         date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date',
-                       'issue_date', 'date_of_maturity', 'premium_payment_date']
+                       'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
         for field in date_fields:
             if field in update_data and update_data[field]:
                 update_data[field] = update_data[field].isoformat() if hasattr(update_data[field], 'isoformat') else update_data[field]
@@ -199,7 +199,7 @@ async def update_asset(asset_id: str, asset: AssetUpdate, current_user=Depends(g
         decimal_fields = [
             'current_value', 'quantity', 'purchase_price', 'current_price',
             'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
-            'amount_insured', 'premium'
+            'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price'
         ]
         for field in decimal_fields:
             if field in update_data and update_data[field] is not None:

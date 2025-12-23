@@ -15,6 +15,7 @@ class AssetType(str, Enum):
     BANK_ACCOUNT = "bank_account"
     FIXED_DEPOSIT = "fixed_deposit"
     INSURANCE_POLICY = "insurance_policy"
+    COMMODITY = "commodity"
 
 
 class BankAccountType(str, Enum):
@@ -89,6 +90,16 @@ class InsurancePolicyFields(BaseModel):
     premium_payment_date: Optional[date] = None
 
 
+# Commodity-specific fields
+class CommodityFields(BaseModel):
+    commodity_name: str = Field(..., min_length=1, max_length=255)
+    form: str = Field(..., min_length=1, max_length=50)  # e.g., "ETF", "Physical", "Coin"
+    commodity_quantity: Decimal = Field(..., gt=0)
+    commodity_units: str = Field(..., min_length=1, max_length=20)  # e.g., "grams", "karat", "units"
+    commodity_purchase_date: date
+    commodity_purchase_price: Decimal = Field(..., gt=0)
+
+
 # Asset Create Models (with type-specific validation)
 class AssetCreate(AssetBase):
     class Config:
@@ -143,7 +154,8 @@ class AssetCreate(AssetBase):
     # Validators to convert strings to Decimal for all Decimal fields
     @field_validator('quantity', 'purchase_price', 'current_price', 'nav', 'units', 
                      'interest_rate', 'principal_amount', 'fd_interest_rate', 
-                     'amount_insured', 'premium', mode='before', check_fields=False)
+                     'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price', 
+                     mode='before', check_fields=False)
     @classmethod
     def convert_decimal_fields(cls, v):
         """Convert string or float to Decimal"""
@@ -162,7 +174,8 @@ class AssetCreate(AssetBase):
     
     # Validator to convert string dates to date objects
     @field_validator('purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
-                     'issue_date', 'date_of_maturity', 'premium_payment_date', mode='before', check_fields=False)
+                     'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date', 
+                     mode='before', check_fields=False)
     @classmethod
     def convert_date_fields(cls, v):
         """Convert string dates to date objects"""
@@ -198,6 +211,10 @@ class AssetCreate(AssetBase):
         elif self.type == AssetType.INSURANCE_POLICY:
             if not self.policy_number or not self.amount_insured or not self.issue_date or not self.date_of_maturity or self.premium is None:
                 raise ValueError("policy_number, amount_insured, issue_date, date_of_maturity, and premium are required for insurance policy assets")
+        
+        elif self.type == AssetType.COMMODITY:
+            if not self.commodity_name or not self.form or not self.commodity_quantity or not self.commodity_units or not self.commodity_purchase_date or not self.commodity_purchase_price:
+                raise ValueError("commodity_name, form, commodity_quantity, commodity_units, commodity_purchase_date, and commodity_purchase_price are required for commodity assets")
 
 
 # Asset Update Model
@@ -244,6 +261,22 @@ class AssetUpdate(BaseModel):
     premium: Optional[Decimal] = Field(None, ge=0)
     nominee: Optional[str] = Field(None, max_length=255)
     premium_payment_date: Optional[date] = None
+    
+    # Commodity fields
+    commodity_name: Optional[str] = Field(None, max_length=255)
+    form: Optional[str] = Field(None, max_length=50)
+    commodity_quantity: Optional[Decimal] = Field(None, gt=0)
+    commodity_units: Optional[str] = Field(None, max_length=20)
+    commodity_purchase_date: Optional[date] = None
+    commodity_purchase_price: Optional[Decimal] = Field(None, gt=0)
+    
+    # Commodity fields
+    commodity_name: Optional[str] = Field(None, max_length=255)
+    form: Optional[str] = Field(None, max_length=50)
+    commodity_quantity: Optional[Decimal] = Field(None, gt=0)
+    commodity_units: Optional[str] = Field(None, max_length=20)
+    commodity_purchase_date: Optional[date] = None
+    commodity_purchase_price: Optional[Decimal] = Field(None, gt=0)
 
 
 # Asset Response Model
@@ -287,6 +320,13 @@ class Asset(AssetBase):
     premium: Optional[Decimal] = None
     nominee: Optional[str] = None
     premium_payment_date: Optional[date] = None
+    
+    # Commodity fields
+    commodity_name: Optional[str] = None
+    form: Optional[str] = None
+    commodity_quantity: Optional[Decimal] = None
+    commodity_purchase_date: Optional[date] = None
+    commodity_purchase_price: Optional[Decimal] = None
     
     created_at: datetime
     updated_at: datetime

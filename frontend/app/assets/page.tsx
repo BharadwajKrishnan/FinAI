@@ -19,7 +19,7 @@ const marketConfig = {
   },
 };
 
-type AssetType = "stock" | "bank_account" | "mutual_fund" | "fixed_deposit" | "insurance_policy";
+type AssetType = "stock" | "bank_account" | "mutual_fund" | "fixed_deposit" | "insurance_policy" | "commodity";
 
 const assetTypeOptions = [
   { value: "stock", label: "Stock" },
@@ -27,9 +27,10 @@ const assetTypeOptions = [
   { value: "mutual_fund", label: "Mutual Funds" },
   { value: "fixed_deposit", label: "Fixed Deposits" },
   { value: "insurance_policy", label: "Insurance Policy" },
+  { value: "commodity", label: "Commodity" },
 ];
 
-type ActiveTab = "stocks" | "bank_accounts" | "mutual_funds" | "fixed_deposits" | "insurance_policies";
+type ActiveTab = "stocks" | "bank_accounts" | "mutual_funds" | "fixed_deposits" | "insurance_policies" | "commodities";
 
 const tabConfig = [
   { id: "stocks" as ActiveTab, label: "Stocks" },
@@ -37,6 +38,7 @@ const tabConfig = [
   { id: "mutual_funds" as ActiveTab, label: "Mutual Funds" },
   { id: "fixed_deposits" as ActiveTab, label: "Fixed Deposits" },
   { id: "insurance_policies" as ActiveTab, label: "Insurance Policies" },
+  { id: "commodities" as ActiveTab, label: "Commodities" },
 ];
 
 // Helper function to format date as DD/MM/YYYY
@@ -67,6 +69,7 @@ export default function AssetsPage() {
   const [editingMutualFundId, setEditingMutualFundId] = useState<string | null>(null);
   const [editingFixedDepositId, setEditingFixedDepositId] = useState<string | null>(null);
   const [editingInsurancePolicyId, setEditingInsurancePolicyId] = useState<string | null>(null);
+  const [editingCommodityId, setEditingCommodityId] = useState<string | null>(null);
   
   // Separate net worth for each market
   const [netWorth, setNetWorth] = useState<Record<Market, number>>({
@@ -150,6 +153,22 @@ export default function AssetsPage() {
     europe: [],
   });
   
+  // Store commodities by market
+  const [commodities, setCommodities] = useState<Record<Market, Array<{
+    id: string;
+    dbId?: string; // Database ID for persistence
+    commodityName: string;
+    form: string;
+    quantity: number;
+    units: string;
+    purchaseDate: string;
+    purchasePrice: number;
+    currentValue: number; // Current value of the commodity
+  }>>>({
+    india: [],
+    europe: [],
+  });
+  
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
   
   // Stock-specific fields
@@ -189,6 +208,14 @@ export default function AssetsPage() {
   const [nominee, setNominee] = useState("");
   const [premiumPaymentDate, setPremiumPaymentDate] = useState("");
   
+  // Commodity-specific fields
+  const [commodityName, setCommodityName] = useState("");
+  const [commodityForm, setCommodityForm] = useState("");
+  const [commodityQuantity, setCommodityQuantity] = useState("");
+  const [commodityUnits, setCommodityUnits] = useState("grams");
+  const [commodityPurchaseDate, setCommodityPurchaseDate] = useState(new Date().toISOString().split('T')[0]);
+  const [commodityPurchasePrice, setCommodityPurchasePrice] = useState("");
+  
   const currentMarket = marketConfig[selectedMarket];
   const currentNetWorth = netWorth[selectedMarket];
   
@@ -221,7 +248,7 @@ export default function AssetsPage() {
     const marketBankAccounts = bankAccounts[market];
     const marketMutualFunds = mutualFunds[market];
     const marketFixedDeposits = fixedDeposits[market];
-    const marketInsurancePolicies = insurancePolicies[market];
+    const marketCommodities = commodities[market];
     
     // Use actualWorth (current market value) for stocks, not totalInvested
     const stocksTotal = marketStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
@@ -229,9 +256,11 @@ export default function AssetsPage() {
     const mutualFundsTotal = marketMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
     // For fixed deposits, use amount invested (not maturity amount) - this is an exception
     const fixedDepositsTotal = marketFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+    // Commodities are included in net worth calculation
+    const commoditiesTotal = marketCommodities.reduce((sum, commodity) => sum + commodity.currentValue, 0);
     // Insurance policies are NOT included in net worth calculation
     
-    return stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+    return stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
   };
   
   // Calculate total amount invested for mutual funds
@@ -282,6 +311,8 @@ export default function AssetsPage() {
           const europeFixedDeposits: typeof fixedDeposits.europe = [];
           const indiaInsurancePolicies: typeof insurancePolicies.india = [];
           const europeInsurancePolicies: typeof insurancePolicies.europe = [];
+          const indiaCommodities: typeof commodities.india = [];
+          const europeCommodities: typeof commodities.europe = [];
           
           assets.forEach((asset: any) => {
             const currency = asset.currency || "USD";
@@ -393,6 +424,28 @@ export default function AssetsPage() {
               } else {
                 europeInsurancePolicies.push(insurancePolicy);
               }
+            } else if (asset.type === "commodity") {
+              const quantity = parseFloat(asset.commodity_quantity || "0");
+              const purchasePrice = parseFloat(asset.commodity_purchase_price || "0");
+              const currentValue = parseFloat(asset.current_value || (quantity * purchasePrice));
+              
+              const commodity = {
+                id: asset.id,
+                dbId: asset.id,
+                commodityName: asset.commodity_name || asset.name,
+                form: asset.form || "",
+                quantity: quantity,
+                units: asset.commodity_units || "grams",
+                purchaseDate: asset.commodity_purchase_date || new Date().toISOString().split('T')[0],
+                purchasePrice: purchasePrice,
+                currentValue: currentValue,
+              };
+              
+              if (market === "india") {
+                indiaCommodities.push(commodity);
+              } else {
+                europeCommodities.push(commodity);
+              }
             }
           });
           
@@ -421,16 +474,24 @@ export default function AssetsPage() {
             europe: europeInsurancePolicies,
           });
           
+          setCommodities({
+            india: indiaCommodities,
+            europe: europeCommodities,
+          });
+          
           // Recalculate net worth (using actualWorth for stocks, not totalInvested)
           // Insurance policies are NOT included in net worth calculation
+          // Commodities are included in net worth calculation
           const indiaNetWorth = indiaStocks.reduce((sum, s) => sum + s.actualWorth, 0) +
                                indiaBankAccounts.reduce((sum, a) => sum + a.balance, 0) +
                                indiaMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0) +
-                               indiaFixedDeposits.reduce((sum, fd) => sum + fd.maturityAmount, 0);
+                               indiaFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0) +
+                               indiaCommodities.reduce((sum, c) => sum + c.currentValue, 0);
           const europeNetWorth = europeStocks.reduce((sum, s) => sum + s.actualWorth, 0) +
                                 europeBankAccounts.reduce((sum, a) => sum + a.balance, 0) +
                                 europeMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0) +
-                                europeFixedDeposits.reduce((sum, fd) => sum + fd.maturityAmount, 0);
+                                europeFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0) +
+                                europeCommodities.reduce((sum, c) => sum + c.currentValue, 0);
           
           setNetWorth({
             india: indiaNetWorth,
@@ -504,10 +565,14 @@ export default function AssetsPage() {
               // Recalculate net worth
               const indiaNetWorth = updatedStocks.india.reduce((sum, s) => sum + s.actualWorth, 0) +
                                    bankAccounts.india.reduce((sum, a) => sum + a.balance, 0) +
-                                   mutualFunds.india.reduce((sum, f) => sum + f.currentWorth, 0);
+                                   mutualFunds.india.reduce((sum, f) => sum + f.currentWorth, 0) +
+                                   fixedDeposits.india.reduce((sum, fd) => sum + fd.amountInvested, 0) +
+                                   commodities.india.reduce((sum, c) => sum + c.currentValue, 0);
               const europeNetWorth = updatedStocks.europe.reduce((sum, s) => sum + s.actualWorth, 0) +
                                     bankAccounts.europe.reduce((sum, a) => sum + a.balance, 0) +
-                                    mutualFunds.europe.reduce((sum, f) => sum + f.currentWorth, 0);
+                                    mutualFunds.europe.reduce((sum, f) => sum + f.currentWorth, 0) +
+                                    fixedDeposits.europe.reduce((sum, fd) => sum + fd.amountInvested, 0) +
+                                    commodities.europe.reduce((sum, c) => sum + c.currentValue, 0);
 
               setNetWorth({
                 india: indiaNetWorth,
@@ -799,6 +864,88 @@ export default function AssetsPage() {
       }
     } catch (error) {
       console.error("Error saving insurance policy to database:", error);
+      throw error;
+    }
+  };
+
+  // Save commodity to database
+  const saveCommodityToDatabase = async (commodity: {
+    id: string;
+    dbId?: string;
+    commodityName: string;
+    form: string;
+    quantity: number;
+    units: string;
+    purchaseDate: string;
+    purchasePrice: number;
+    currentValue: number;
+  }, market: Market) => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return;
+
+      const currency = marketConfig[market].currency;
+      const assetData: any = {
+        name: commodity.commodityName,
+        type: "commodity",
+        currency: currency,
+        commodity_name: commodity.commodityName,
+        form: commodity.form,
+        commodity_quantity: commodity.quantity.toString(),
+        commodity_units: commodity.units,
+        commodity_purchase_date: commodity.purchaseDate,
+        commodity_purchase_price: commodity.purchasePrice.toString(),
+        current_value: commodity.currentValue.toString(),
+        is_active: true,
+      };
+
+      console.log(`Saving commodity to database: ${commodity.commodityName}, market: ${market}, currency: ${currency}`);
+
+      if (commodity.dbId) {
+        // Update existing asset
+        console.log(`Updating existing commodity with dbId: ${commodity.dbId}`);
+        const response = await fetch(`/api/assets/${commodity.dbId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Failed to update commodity" }));
+          console.error(`Failed to update commodity: ${errorData.detail || response.statusText}`, errorData);
+          throw new Error(errorData.detail || "Failed to update commodity");
+        }
+
+        const updatedAsset = await response.json();
+        console.log(`Successfully updated commodity: ${commodity.commodityName}`);
+        return updatedAsset.id;
+      } else {
+        // Create new asset
+        console.log(`Creating new commodity: ${commodity.commodityName}`);
+        const response = await fetch("/api/assets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Failed to create commodity" }));
+          console.error(`Failed to create commodity: ${errorData.detail || response.statusText}`, errorData);
+          throw new Error(errorData.detail || "Failed to create commodity");
+        }
+
+        const createdAsset = await response.json();
+        console.log(`Successfully created commodity: ${commodity.commodityName}, dbId: ${createdAsset.id}`);
+        return createdAsset.id;
+      }
+    } catch (error) {
+      console.error("Error saving commodity to database:", error);
       throw error;
     }
   };
@@ -1198,7 +1345,9 @@ export default function AssetsPage() {
                                                 const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
                                                 const updatedFixedDeposits = fixedDeposits[selectedMarket];
                                                 const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                const updatedCommodities = commodities[selectedMarket];
+                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                                                 
                                                 setNetWorth((prev) => ({
                                                   ...prev,
@@ -1374,7 +1523,9 @@ export default function AssetsPage() {
                                                 const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
                                                 const updatedFixedDeposits = fixedDeposits[selectedMarket];
                                                 const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                const updatedCommodities = commodities[selectedMarket];
+                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                                                 
                                                 setNetWorth((prev) => ({
                                                   ...prev,
@@ -1558,7 +1709,9 @@ export default function AssetsPage() {
                                                 const mutualFundsTotal = updatedFunds.reduce((sum, f) => sum + f.currentWorth, 0);
                                                 const updatedFixedDeposits = fixedDeposits[selectedMarket];
                                                 const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                const updatedCommodities = commodities[selectedMarket];
+                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                                                 
                                                 setNetWorth((prev) => ({
                                                   ...prev,
@@ -1745,7 +1898,9 @@ export default function AssetsPage() {
                                                   const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
                                                   const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
                                                   const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                  const updatedCommodities = commodities[selectedMarket];
+                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                                                   
                                                   setNetWorth((prev) => ({
                                                     ...prev,
@@ -1937,8 +2092,10 @@ export default function AssetsPage() {
                                                   const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
                                                   const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
                                                   const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                  const updatedCommodities = commodities[selectedMarket];
+                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
                                                   // Insurance policies are NOT included in net worth calculation
-                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                                                   
                                                   setNetWorth((prev) => ({
                                                     ...prev,
@@ -2004,6 +2161,187 @@ export default function AssetsPage() {
                         )}
                       </div>
                     )}
+
+                    {activeTab === "commodities" && (
+                      <div>
+                        {commodities[selectedMarket].length === 0 ? (
+                          <div className="text-center py-12">
+                            <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
+                              <span className="text-3xl font-semibold text-gray-600">
+                                {currentMarket.symbol}
+                              </span>
+                            </div>
+                            <h3 className="text-lg font-medium text-gray-900 mb-2">No Commodities Added</h3>
+                            <p className="text-gray-500 mb-4">
+                              Track your commodities like gold, silver, etc.
+                            </p>
+                            <button
+                              onClick={() => {
+                                setSelectedAssetType("commodity");
+                                setIsAddAssetModalOpen(true);
+                              }}
+                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                            >
+                              Add Commodity
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-sm font-medium text-gray-700">
+                                {commodities[selectedMarket].length} {commodities[selectedMarket].length === 1 ? "Commodity" : "Commodities"}
+                              </h3>
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("commodity");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                + Add Commodity
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {commodities[selectedMarket].map((commodity) => {
+                                return (
+                                  <div
+                                    key={commodity.id}
+                                    className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
+                                  >
+                                    <div className="flex items-start justify-between">
+                                      <div className="flex-1">
+                                        <h4 className="text-base font-semibold text-gray-900 mb-1">
+                                          {commodity.commodityName}
+                                        </h4>
+                                        <div className="space-y-1 text-sm text-gray-600">
+                                          <p>
+                                            <span className="font-medium">Form:</span> {commodity.form}
+                                          </p>
+                                          <p>
+                                            <span className="font-medium">Quantity:</span> {commodity.quantity.toLocaleString("en-IN", {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 4,
+                                            })} {commodity.units}
+                                          </p>
+                                          <p>
+                                            <span className="font-medium">Purchase Date:</span> {formatDateDDMMYYYY(commodity.purchaseDate)}
+                                          </p>
+                                          <p>
+                                            <span className="font-medium">Purchase Price:</span> {currentMarket.symbol}
+                                            {commodity.purchasePrice.toLocaleString("en-IN", {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2,
+                                            })}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2 ml-4">
+                                        <button
+                                          onClick={() => {
+                                            setEditingCommodityId(commodity.id);
+                                            setSelectedAssetType("commodity");
+                                            setCommodityName(commodity.commodityName);
+                                            setCommodityForm(commodity.form);
+                                            setCommodityQuantity(commodity.quantity.toString());
+                                            setCommodityUnits(commodity.units);
+                                            setCommodityPurchaseDate(commodity.purchaseDate);
+                                            setCommodityPurchasePrice(commodity.purchasePrice.toString());
+                                            setIsAddAssetModalOpen(true);
+                                          }}
+                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                          title="Edit commodity"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                            />
+                                          </svg>
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            if (window.confirm(`Are you sure you want to delete ${commodity.commodityName} commodity? This action cannot be undone.`)) {
+                                              const dbId = commodity.dbId || commodity.id;
+                                              const deleted = await deleteAssetFromDatabase(dbId);
+                                              
+                                              if (deleted) {
+                                                // Remove from state
+                                                setCommodities((prev) => {
+                                                  const updatedCommodities = prev[selectedMarket].filter(c => c.id !== commodity.id);
+                                                  
+                                                  // Recalculate net worth
+                                                  const updatedStocks = stocks[selectedMarket];
+                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                  const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                  const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                  
+                                                  setNetWorth((prev) => ({
+                                                    ...prev,
+                                                    [selectedMarket]: newNetWorth,
+                                                  }));
+                                                  
+                                                  return {
+                                                    ...prev,
+                                                    [selectedMarket]: updatedCommodities,
+                                                  };
+                                                });
+                                              } else {
+                                                alert("Failed to delete commodity. Please try again.");
+                                              }
+                                            }
+                                          }}
+                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                          title="Delete commodity"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                            />
+                                          </svg>
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                      <div>
+                                        <p className="text-xs text-gray-500 mb-1">Current Value</p>
+                                        <p className="text-sm font-semibold text-gray-900">
+                                          {currentMarket.symbol}
+                                          {commodity.currentValue.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2032,7 +2370,7 @@ export default function AssetsPage() {
               {/* Header */}
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {editingStockId || editingBankAccountId || editingMutualFundId || editingFixedDepositId ? "Edit Asset" : "Add New Asset"}
+                  {editingStockId || editingBankAccountId || editingMutualFundId || editingFixedDepositId || editingInsurancePolicyId || editingCommodityId ? "Edit Asset" : "Add New Asset"}
                 </h2>
                 <button
                   onClick={() => setIsAddAssetModalOpen(false)}
@@ -2090,7 +2428,9 @@ export default function AssetsPage() {
                           const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                           const updatedFixedDeposits = fixedDeposits[selectedMarket];
                           const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          const updatedCommodities = commodities[selectedMarket];
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -2134,7 +2474,9 @@ export default function AssetsPage() {
                         const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                         const updatedFixedDeposits = fixedDeposits[selectedMarket];
                         const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        const updatedCommodities = commodities[selectedMarket];
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -2184,7 +2526,9 @@ export default function AssetsPage() {
                           const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                           const updatedFixedDeposits = fixedDeposits[selectedMarket];
                           const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          const updatedCommodities = commodities[selectedMarket];
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -2272,7 +2616,9 @@ export default function AssetsPage() {
                         const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                         const updatedFixedDeposits = fixedDeposits[selectedMarket];
                         const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        const updatedCommodities = commodities[selectedMarket];
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -2321,7 +2667,9 @@ export default function AssetsPage() {
                           const mutualFundsTotal = updatedFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                           const updatedFixedDeposits = fixedDeposits[selectedMarket];
                           const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          const updatedCommodities = commodities[selectedMarket];
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -2368,7 +2716,9 @@ export default function AssetsPage() {
                         const mutualFundsTotal = updatedFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                         const updatedFixedDeposits = fixedDeposits[selectedMarket];
                         const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        const updatedCommodities = commodities[selectedMarket];
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -2423,7 +2773,9 @@ export default function AssetsPage() {
                           const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
                           const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                           const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          const updatedCommodities = commodities[selectedMarket];
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -2471,7 +2823,9 @@ export default function AssetsPage() {
                         const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
                         const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                         const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        const updatedCommodities = commodities[selectedMarket];
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -2521,8 +2875,10 @@ export default function AssetsPage() {
                           const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
                           const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                           const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const updatedCommodities = commodities[selectedMarket];
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
                           // Insurance policies are NOT included in net worth calculation
-                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                           
                           setNetWorth((prev) => ({
                             ...prev,
@@ -2578,8 +2934,10 @@ export default function AssetsPage() {
                         const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
                         const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
                         const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const updatedCommodities = commodities[selectedMarket];
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
                         // Insurance policies are NOT included in net worth calculation
-                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
                         
                         setNetWorth((prev) => ({
                           ...prev,
@@ -2589,6 +2947,113 @@ export default function AssetsPage() {
                         return {
                           ...prev,
                           [selectedMarket]: updatedPolicies,
+                        };
+                      });
+                    }
+                  } else if (selectedAssetType === "commodity") {
+                    const quantityValue = parseFloat(commodityQuantity) || 0;
+                    const purchasePriceValue = parseFloat(commodityPurchasePrice) || 0;
+                    const currentValue = quantityValue * purchasePriceValue; // For now, use purchase price * quantity as current value
+                    
+                    if (editingCommodityId) {
+                      // Update existing commodity
+                      setCommodities((prev) => {
+                        const marketCommodities = prev[selectedMarket];
+                        const commodityIndex = marketCommodities.findIndex(c => c.id === editingCommodityId);
+                        
+                        if (commodityIndex >= 0) {
+                          // Update the commodity
+                          const updatedCommodities = [...marketCommodities];
+                          updatedCommodities[commodityIndex] = {
+                            ...marketCommodities[commodityIndex],
+                            commodityName: commodityName,
+                            form: commodityForm,
+                            quantity: quantityValue,
+                            units: commodityUnits,
+                            purchaseDate: commodityPurchaseDate,
+                            purchasePrice: purchasePriceValue,
+                            currentValue: currentValue,
+                          };
+                          
+                          // Save to database (async, but don't wait)
+                          saveCommodityToDatabase(updatedCommodities[commodityIndex], selectedMarket).catch(console.error);
+                          
+                          // Calculate new net worth with updated commodities
+                          const updatedStocks = stocks[selectedMarket];
+                          const updatedBankAccounts = bankAccounts[selectedMarket];
+                          const updatedMutualFunds = mutualFunds[selectedMarket];
+                          const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                          const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                          const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                          const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                          
+                          setNetWorth((prev) => ({
+                            ...prev,
+                            [selectedMarket]: newNetWorth,
+                          }));
+                          
+                          return {
+                            ...prev,
+                            [selectedMarket]: updatedCommodities,
+                          };
+                        }
+                        return prev;
+                      });
+                      
+                      setEditingCommodityId(null);
+                    } else {
+                      // Add new commodity
+                      const tempId = `commodity-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                      const newCommodity: typeof commodities.india[0] = {
+                        id: tempId,
+                        commodityName: commodityName,
+                        form: commodityForm,
+                        quantity: quantityValue,
+                        units: commodityUnits,
+                        purchaseDate: commodityPurchaseDate,
+                        purchasePrice: purchasePriceValue,
+                        currentValue: currentValue,
+                      };
+                      
+                      // Save to database
+                      try {
+                        const dbId = await saveCommodityToDatabase(newCommodity, selectedMarket);
+                        if (dbId && typeof dbId === 'string') {
+                          newCommodity.dbId = dbId;
+                          newCommodity.id = dbId; // Use database ID as the main ID
+                        }
+                      } catch (error) {
+                        console.error("Error saving commodity:", error);
+                        alert("Failed to save commodity. Please try again.");
+                        return; // Don't add to state if save failed
+                      }
+                      
+                      setCommodities((prev) => {
+                        const updatedCommodities = [...prev[selectedMarket], newCommodity];
+                        
+                        // Calculate new net worth with updated commodities
+                        const updatedStocks = stocks[selectedMarket];
+                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                        
+                        setNetWorth((prev) => ({
+                          ...prev,
+                          [selectedMarket]: newNetWorth,
+                        }));
+                        
+                        return {
+                          ...prev,
+                          [selectedMarket]: updatedCommodities,
                         };
                       });
                     }
@@ -2628,6 +3093,13 @@ export default function AssetsPage() {
                   setEditingMutualFundId(null);
                   setEditingFixedDepositId(null);
                   setEditingInsurancePolicyId(null);
+                  setEditingCommodityId(null);
+                  setCommodityName("");
+                  setCommodityForm("");
+                  setCommodityQuantity("");
+                  setCommodityUnits("grams");
+                  setCommodityPurchaseDate(new Date().toISOString().split('T')[0]);
+                  setCommodityPurchasePrice("");
                   setIsAddAssetModalOpen(false);
                 }}
                 className="space-y-4"
@@ -3222,6 +3694,125 @@ export default function AssetsPage() {
                         id="premium-payment-date"
                         value={premiumPaymentDate}
                         onChange={(e) => setPremiumPaymentDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Commodity-specific fields */}
+                {selectedAssetType === "commodity" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="commodity-name"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Commodity Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="commodity-name"
+                        value={commodityName}
+                        onChange={(e) => setCommodityName(e.target.value)}
+                        required
+                        placeholder="e.g., Gold, Silver"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="commodity-form"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Form <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="commodity-form"
+                        value={commodityForm}
+                        onChange={(e) => setCommodityForm(e.target.value)}
+                        required
+                        placeholder="e.g., ETF, Physical, Coin"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="commodity-quantity"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Quantity <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="commodity-quantity"
+                        value={commodityQuantity}
+                        onChange={(e) => setCommodityQuantity(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter quantity"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="commodity-units"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Units <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        id="commodity-units"
+                        value={commodityUnits}
+                        onChange={(e) => setCommodityUnits(e.target.value)}
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      >
+                        <option value="grams">Grams</option>
+                        <option value="karat">Karat</option>
+                        <option value="units">Units</option>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="commodity-purchase-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Purchase Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="commodity-purchase-date"
+                        value={commodityPurchaseDate}
+                        onChange={(e) => setCommodityPurchaseDate(e.target.value)}
+                        required
+                        max={new Date().toISOString().split('T')[0]}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="commodity-purchase-price"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Purchase Price ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="commodity-purchase-price"
+                        value={commodityPurchasePrice}
+                        onChange={(e) => setCommodityPurchasePrice(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter purchase price per unit"
                         className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                       />
                     </div>

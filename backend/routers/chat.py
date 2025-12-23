@@ -101,7 +101,8 @@ async def chat(
                         "mutual_funds": [],
                         "bank_accounts": [],
                         "fixed_deposits": [],
-                        "insurance_policies": []
+                        "insurance_policies": [],
+                        "commodities": []
                     },
                     "europe": {
                         "currency": "EUR",
@@ -109,7 +110,8 @@ async def chat(
                         "mutual_funds": [],
                         "bank_accounts": [],
                         "fixed_deposits": [],
-                        "insurance_policies": []
+                        "insurance_policies": [],
+                        "commodities": []
                     }
                 }
                 
@@ -178,6 +180,17 @@ async def chat(
                             "premium_payment_date": asset.get("premium_payment_date")
                         })
                         portfolio_data[market]["insurance_policies"].append(asset_info)
+                    elif asset_type == "commodity":
+                        asset_info.update({
+                            "commodity_name": asset.get("commodity_name"),
+                            "form": asset.get("form"),
+                            "quantity": float(asset.get("commodity_quantity", 0)) if asset.get("commodity_quantity") else 0,
+                            "units": asset.get("commodity_units"),
+                            "purchase_date": asset.get("commodity_purchase_date"),
+                            "purchase_price": float(asset.get("commodity_purchase_price", 0)) if asset.get("commodity_purchase_price") else 0,
+                            "current_value": float(asset.get("current_value", 0)) if asset.get("current_value") else 0
+                        })
+                        portfolio_data[market]["commodities"].append(asset_info)
             except Exception as portfolio_error:
                 # If portfolio fetch fails, continue without portfolio data
                 import traceback
@@ -190,7 +203,8 @@ async def chat(
                         "mutual_funds": [],
                         "bank_accounts": [],
                         "fixed_deposits": [],
-                        "insurance_policies": []
+                        "insurance_policies": [],
+                        "commodities": []
                     },
                     "europe": {
                         "currency": "EUR",
@@ -198,7 +212,8 @@ async def chat(
                         "mutual_funds": [],
                         "bank_accounts": [],
                         "fixed_deposits": [],
-                        "insurance_policies": []
+                        "insurance_policies": [],
+                        "commodities": []
                     }
                 }
         
@@ -260,8 +275,8 @@ async def chat(
         if context == "assets":
             portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
             print(f"Portfolio JSON length: {len(portfolio_json)} characters")
-            print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits, {len(portfolio_data['india']['insurance_policies'])} insurance policies")
-            print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits, {len(portfolio_data['europe']['insurance_policies'])} insurance policies")
+            print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits, {len(portfolio_data['india']['insurance_policies'])} insurance policies, {len(portfolio_data['india']['commodities'])} commodities")
+            print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits, {len(portfolio_data['europe']['insurance_policies'])} insurance policies, {len(portfolio_data['europe']['commodities'])} commodities")
         
         # Convert expenses to JSON string (only if context is "expenses")
         expenses_json = ""
@@ -382,7 +397,7 @@ The user's current portfolio data is provided below in JSON format. Use this dat
 The portfolio is organized by market (India/Europe) and then by asset type. Each market has its own currency (INR for India, EUR for Europe).
 
 When analyzing the portfolio:
-1. Consider the asset allocation across different types (stocks, mutual funds, bank accounts, fixed deposits, insurance policies) within each market
+1. Consider the asset allocation across different types (stocks, mutual funds, bank accounts, fixed deposits, insurance policies, commodities) within each market
 2. Analyze the distribution across different markets/currencies (INR for India, EUR for Europe)
 3. Calculate total portfolio value and breakdown by asset type for each market separately
 4. Provide insights on diversification, risk exposure, and potential improvements for each market
