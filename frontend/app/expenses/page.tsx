@@ -263,10 +263,16 @@ export default function ExpensesPage() {
     }
   };
 
+  // Fetch expenses when filters change
   useEffect(() => {
     fetchExpenses();
-    fetchFamilyMembers();
   }, [selectedYear, selectedMonth, selectedCurrency]);
+
+  // Fetch family members on initial mount (only once)
+  useEffect(() => {
+    fetchFamilyMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Update form currency and date when selectedCurrency/month/year changes (only if not editing)
   useEffect(() => {

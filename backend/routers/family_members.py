@@ -23,15 +23,25 @@ async def get_family_members(current_user=Depends(get_current_user)):
         else:
             raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
         
+        print(f"Fetching family members for user_id: {user_id}")
+        
         # Use service role client to bypass RLS (user already validated via get_current_user)
         response = supabase_service.table("family_members").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        return response.data if response.data else []
+        
+        family_members = response.data if response.data else []
+        print(f"Found {len(family_members)} family members for user {user_id}")
+        if len(family_members) > 0:
+            print(f"Sample family member: {family_members[0]}")
+        
+        return family_members
     except Exception as e:
         import traceback
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Error fetching family members: {str(e)}")
         logger.error(traceback.format_exc())
+        print(f"ERROR fetching family members: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to fetch family members: {str(e)}")
 
 

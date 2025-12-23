@@ -27,19 +27,34 @@ export default function ProfilePage() {
         return;
       }
 
-      const response = await fetch("/api/family-members", {
+      // Try with trailing slash first (to avoid redirect)
+      let response = await fetch("/api/family-members/", {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        redirect: "follow", // Follow redirects
       });
+
+      // If 404 or other error, try without trailing slash
+      if (!response.ok && response.status !== 200) {
+        response = await fetch("/api/family-members", {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          redirect: "follow",
+        });
+      }
 
       if (response.ok) {
         const members = await response.json();
+        console.log(`Fetched ${members?.length || 0} family members`);
         setFamilyMembers(members || []);
       } else if (response.status === 401) {
         localStorage.removeItem("access_token");
         localStorage.removeItem("refresh_token");
         window.location.href = "/";
+      } else {
+        console.error(`Failed to fetch family members: ${response.status} ${response.statusText}`);
       }
     } catch (error) {
       console.error("Error fetching family members:", error);
