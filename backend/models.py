@@ -14,6 +14,7 @@ class AssetType(str, Enum):
     MUTUAL_FUND = "mutual_fund"
     BANK_ACCOUNT = "bank_account"
     FIXED_DEPOSIT = "fixed_deposit"
+    INSURANCE_POLICY = "insurance_policy"
 
 
 class BankAccountType(str, Enum):
@@ -77,6 +78,17 @@ class FixedDepositFields(BaseModel):
     start_date: date
 
 
+# Insurance Policy-specific fields
+class InsurancePolicyFields(BaseModel):
+    policy_number: str = Field(..., min_length=1, max_length=100)
+    amount_insured: Decimal = Field(..., gt=0)
+    issue_date: date
+    date_of_maturity: date
+    premium: Decimal = Field(..., ge=0)
+    nominee: Optional[str] = Field(None, max_length=255)
+    premium_payment_date: Optional[date] = None
+
+
 # Asset Create Models (with type-specific validation)
 class AssetCreate(AssetBase):
     class Config:
@@ -130,7 +142,8 @@ class AssetCreate(AssetBase):
     
     # Validators to convert strings to Decimal for all Decimal fields
     @field_validator('quantity', 'purchase_price', 'current_price', 'nav', 'units', 
-                     'interest_rate', 'principal_amount', 'fd_interest_rate', mode='before')
+                     'interest_rate', 'principal_amount', 'fd_interest_rate', 
+                     'amount_insured', 'premium', mode='before', check_fields=False)
     @classmethod
     def convert_decimal_fields(cls, v):
         """Convert string or float to Decimal"""
@@ -148,7 +161,8 @@ class AssetCreate(AssetBase):
         return v
     
     # Validator to convert string dates to date objects
-    @field_validator('purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', mode='before')
+    @field_validator('purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
+                     'issue_date', 'date_of_maturity', 'premium_payment_date', mode='before', check_fields=False)
     @classmethod
     def convert_date_fields(cls, v):
         """Convert string dates to date objects"""
@@ -180,6 +194,10 @@ class AssetCreate(AssetBase):
         elif self.type == AssetType.FIXED_DEPOSIT:
             if not self.principal_amount or not self.fd_interest_rate or not self.maturity_date or not self.start_date:
                 raise ValueError("principal_amount, fd_interest_rate, maturity_date, and start_date are required for fixed deposit assets")
+        
+        elif self.type == AssetType.INSURANCE_POLICY:
+            if not self.policy_number or not self.amount_insured or not self.issue_date or not self.date_of_maturity or self.premium is None:
+                raise ValueError("policy_number, amount_insured, issue_date, date_of_maturity, and premium are required for insurance policy assets")
 
 
 # Asset Update Model
@@ -217,6 +235,15 @@ class AssetUpdate(BaseModel):
     fd_interest_rate: Optional[Decimal] = Field(None, ge=0, le=100)
     maturity_date: Optional[date] = None
     start_date: Optional[date] = None
+    
+    # Insurance Policy fields
+    policy_number: Optional[str] = Field(None, max_length=100)
+    amount_insured: Optional[Decimal] = Field(None, gt=0)
+    issue_date: Optional[date] = None
+    date_of_maturity: Optional[date] = None
+    premium: Optional[Decimal] = Field(None, ge=0)
+    nominee: Optional[str] = Field(None, max_length=255)
+    premium_payment_date: Optional[date] = None
 
 
 # Asset Response Model
@@ -251,6 +278,15 @@ class Asset(AssetBase):
     fd_interest_rate: Optional[Decimal] = None
     maturity_date: Optional[date] = None
     start_date: Optional[date] = None
+    
+    # Insurance Policy fields
+    policy_number: Optional[str] = None
+    amount_insured: Optional[Decimal] = None
+    issue_date: Optional[date] = None
+    date_of_maturity: Optional[date] = None
+    premium: Optional[Decimal] = None
+    nominee: Optional[str] = None
+    premium_payment_date: Optional[date] = None
     
     created_at: datetime
     updated_at: datetime

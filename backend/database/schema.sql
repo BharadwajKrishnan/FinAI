@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS assets (
     
     -- Asset identification
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(50) NOT NULL CHECK (type IN ('stock', 'mutual_fund', 'bank_account', 'fixed_deposit')),
+    type VARCHAR(50) NOT NULL CHECK (type IN ('stock', 'mutual_fund', 'bank_account', 'fixed_deposit', 'insurance_policy')),
     
     -- Common fields for all asset types
     current_value DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS assets (
     fd_interest_rate DECIMAL(5, 2), -- Annual interest rate percentage
     maturity_date DATE, -- When FD matures
     start_date DATE, -- When FD was started
+    
+    -- Insurance Policy specific fields (NULL for other types)
+    policy_number VARCHAR(100), -- Insurance policy number
+    amount_insured DECIMAL(15, 2), -- Sum insured/coverage amount
+    issue_date DATE, -- Date when policy was issued
+    date_of_maturity DATE, -- Date when policy matures
+    premium DECIMAL(15, 2), -- Premium amount
+    nominee VARCHAR(255), -- Nominee name
+    premium_payment_date DATE, -- Next premium payment date
     
     -- Additional metadata
     notes TEXT, -- User notes about the asset

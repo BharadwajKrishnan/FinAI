@@ -19,22 +19,24 @@ const marketConfig = {
   },
 };
 
-type AssetType = "stock" | "bank_account" | "mutual_fund" | "fixed_deposit";
+type AssetType = "stock" | "bank_account" | "mutual_fund" | "fixed_deposit" | "insurance_policy";
 
 const assetTypeOptions = [
   { value: "stock", label: "Stock" },
   { value: "bank_account", label: "Bank Account" },
   { value: "mutual_fund", label: "Mutual Funds" },
   { value: "fixed_deposit", label: "Fixed Deposits" },
+  { value: "insurance_policy", label: "Insurance Policy" },
 ];
 
-type ActiveTab = "stocks" | "bank_accounts" | "mutual_funds" | "fixed_deposits";
+type ActiveTab = "stocks" | "bank_accounts" | "mutual_funds" | "fixed_deposits" | "insurance_policies";
 
 const tabConfig = [
   { id: "stocks" as ActiveTab, label: "Stocks" },
   { id: "bank_accounts" as ActiveTab, label: "Bank Accounts" },
   { id: "mutual_funds" as ActiveTab, label: "Mutual Funds" },
   { id: "fixed_deposits" as ActiveTab, label: "Fixed Deposits" },
+  { id: "insurance_policies" as ActiveTab, label: "Insurance Policies" },
 ];
 
 // Helper function to format date as DD/MM/YYYY
@@ -64,6 +66,7 @@ export default function AssetsPage() {
   const [editingBankAccountId, setEditingBankAccountId] = useState<string | null>(null);
   const [editingMutualFundId, setEditingMutualFundId] = useState<string | null>(null);
   const [editingFixedDepositId, setEditingFixedDepositId] = useState<string | null>(null);
+  const [editingInsurancePolicyId, setEditingInsurancePolicyId] = useState<string | null>(null);
   
   // Separate net worth for each market
   const [netWorth, setNetWorth] = useState<Record<Market, number>>({
@@ -130,6 +133,23 @@ export default function AssetsPage() {
     europe: [],
   });
   
+  // Store insurance policies by market
+  const [insurancePolicies, setInsurancePolicies] = useState<Record<Market, Array<{
+    id: string;
+    dbId?: string; // Database ID for persistence
+    insuranceName: string;
+    policyNumber: string;
+    amountInsured: number;
+    issueDate: string;
+    dateOfMaturity: string;
+    premium: number;
+    nominee?: string;
+    premiumPaymentDate?: string;
+  }>>>({
+    india: [],
+    europe: [],
+  });
+  
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
   
   // Stock-specific fields
@@ -158,6 +178,16 @@ export default function AssetsPage() {
   const [fdRate, setFdRate] = useState("");
   const [fdDuration, setFdDuration] = useState(""); // Duration in months
   const [fdStartDate, setFdStartDate] = useState(new Date().toISOString().split('T')[0]); // Start date
+  
+  // Insurance Policy-specific fields
+  const [insuranceName, setInsuranceName] = useState("");
+  const [policyNumber, setPolicyNumber] = useState("");
+  const [amountInsured, setAmountInsured] = useState("");
+  const [issueDate, setIssueDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dateOfMaturity, setDateOfMaturity] = useState("");
+  const [premium, setPremium] = useState("");
+  const [nominee, setNominee] = useState("");
+  const [premiumPaymentDate, setPremiumPaymentDate] = useState("");
   
   const currentMarket = marketConfig[selectedMarket];
   const currentNetWorth = netWorth[selectedMarket];
@@ -191,6 +221,7 @@ export default function AssetsPage() {
     const marketBankAccounts = bankAccounts[market];
     const marketMutualFunds = mutualFunds[market];
     const marketFixedDeposits = fixedDeposits[market];
+    const marketInsurancePolicies = insurancePolicies[market];
     
     // Use actualWorth (current market value) for stocks, not totalInvested
     const stocksTotal = marketStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
@@ -198,6 +229,7 @@ export default function AssetsPage() {
     const mutualFundsTotal = marketMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
     // For fixed deposits, use amount invested (not maturity amount) - this is an exception
     const fixedDepositsTotal = marketFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+    // Insurance policies are NOT included in net worth calculation
     
     return stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
   };
@@ -248,6 +280,8 @@ export default function AssetsPage() {
           const europeMutualFunds: typeof mutualFunds.europe = [];
           const indiaFixedDeposits: typeof fixedDeposits.india = [];
           const europeFixedDeposits: typeof fixedDeposits.europe = [];
+          const indiaInsurancePolicies: typeof insurancePolicies.india = [];
+          const europeInsurancePolicies: typeof insurancePolicies.europe = [];
           
           assets.forEach((asset: any) => {
             const currency = asset.currency || "USD";
@@ -340,6 +374,25 @@ export default function AssetsPage() {
               } else {
                 europeFixedDeposits.push(fixedDeposit);
               }
+            } else if (asset.type === "insurance_policy") {
+              const insurancePolicy = {
+                id: asset.id,
+                dbId: asset.id,
+                insuranceName: asset.name,
+                policyNumber: asset.policy_number || "",
+                amountInsured: parseFloat(asset.amount_insured || "0"),
+                issueDate: asset.issue_date || new Date().toISOString().split('T')[0],
+                dateOfMaturity: asset.date_of_maturity || "",
+                premium: parseFloat(asset.premium || "0"),
+                nominee: asset.nominee || "",
+                premiumPaymentDate: asset.premium_payment_date || "",
+              };
+              
+              if (market === "india") {
+                indiaInsurancePolicies.push(insurancePolicy);
+              } else {
+                europeInsurancePolicies.push(insurancePolicy);
+              }
             }
           });
           
@@ -363,7 +416,13 @@ export default function AssetsPage() {
             europe: europeFixedDeposits,
           });
           
+          setInsurancePolicies({
+            india: indiaInsurancePolicies,
+            europe: europeInsurancePolicies,
+          });
+          
           // Recalculate net worth (using actualWorth for stocks, not totalInvested)
+          // Insurance policies are NOT included in net worth calculation
           const indiaNetWorth = indiaStocks.reduce((sum, s) => sum + s.actualWorth, 0) +
                                indiaBankAccounts.reduce((sum, a) => sum + a.balance, 0) +
                                indiaMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0) +
@@ -652,6 +711,95 @@ export default function AssetsPage() {
     } catch (error) {
       console.error("Error saving fixed deposit to database:", error);
       return null;
+    }
+  };
+
+  // Save insurance policy to database
+  const saveInsurancePolicyToDatabase = async (policy: {
+    id: string;
+    dbId?: string;
+    insuranceName: string;
+    policyNumber: string;
+    amountInsured: number;
+    issueDate: string;
+    dateOfMaturity: string;
+    premium: number;
+    nominee?: string;
+    premiumPaymentDate?: string;
+  }, market: Market) => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return;
+
+      const currency = marketConfig[market].currency;
+      const assetData: any = {
+        name: policy.insuranceName,
+        type: "insurance_policy",
+        currency: currency,
+        policy_number: policy.policyNumber,
+        amount_insured: policy.amountInsured.toString(),
+        issue_date: policy.issueDate,
+        date_of_maturity: policy.dateOfMaturity,
+        premium: policy.premium.toString(),
+        current_value: policy.amountInsured.toString(), // Use amount insured as current value
+        is_active: true,
+      };
+
+      if (policy.nominee) {
+        assetData.nominee = policy.nominee;
+      }
+      if (policy.premiumPaymentDate) {
+        assetData.premium_payment_date = policy.premiumPaymentDate;
+      }
+
+      console.log(`Saving insurance policy to database: ${policy.insuranceName}, market: ${market}, currency: ${currency}`);
+
+      if (policy.dbId) {
+        // Update existing asset
+        console.log(`Updating existing insurance policy with dbId: ${policy.dbId}`);
+        const response = await fetch(`/api/assets/${policy.dbId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Failed to update insurance policy" }));
+          console.error(`Failed to update insurance policy: ${errorData.detail || response.statusText}`, errorData);
+          throw new Error(errorData.detail || "Failed to update insurance policy");
+        }
+
+        const updatedAsset = await response.json();
+        console.log(`Successfully updated insurance policy: ${policy.insuranceName}`);
+        return updatedAsset.id;
+      } else {
+        // Create new asset
+        console.log(`Creating new insurance policy: ${policy.insuranceName}`);
+        const response = await fetch("/api/assets", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(assetData),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: "Failed to create insurance policy" }));
+          console.error(`Failed to create insurance policy: ${errorData.detail || response.statusText}`, errorData);
+          throw new Error(errorData.detail || "Failed to create insurance policy");
+        }
+
+        const createdAsset = await response.json();
+        console.log(`Successfully created insurance policy: ${policy.insuranceName}, dbId: ${createdAsset.id}`);
+        return createdAsset.id;
+      }
+    } catch (error) {
+      console.error("Error saving insurance policy to database:", error);
+      throw error;
     }
   };
 
@@ -1663,6 +1811,199 @@ export default function AssetsPage() {
                         )}
                       </div>
                     )}
+
+                    {activeTab === "insurance_policies" && (
+                      <div>
+                        {insurancePolicies[selectedMarket].length === 0 ? (
+                          <div className="text-center py-12">
+                            <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
+                              <span className="text-3xl font-semibold text-gray-600">
+                                {currentMarket.symbol}
+                              </span>
+                            </div>
+                            <h3 className="text-lg font-medium text-gray-900 mb-2">No Insurance Policies Added</h3>
+                            <p className="text-gray-500 mb-4">
+                              Track your insurance policies and coverage details
+                            </p>
+                            <button
+                              onClick={() => {
+                                setSelectedAssetType("insurance_policy");
+                                setIsAddAssetModalOpen(true);
+                              }}
+                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                            >
+                              Add Insurance Policy
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between mb-4">
+                              <h3 className="text-sm font-medium text-gray-700">
+                                {insurancePolicies[selectedMarket].length} {insurancePolicies[selectedMarket].length === 1 ? "Insurance Policy" : "Insurance Policies"}
+                              </h3>
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("insurance_policy");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                + Add Insurance Policy
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {insurancePolicies[selectedMarket].map((policy) => {
+                                const maturityDate = policy.dateOfMaturity ? new Date(policy.dateOfMaturity) : null;
+                                const isMatured = maturityDate && maturityDate < new Date();
+                                
+                                return (
+                                  <div
+                                    key={policy.id}
+                                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
+                                  >
+                                    <div className="flex items-start justify-between mb-3">
+                                      <div className="flex-1">
+                                        <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                                          {policy.insuranceName}
+                                        </h4>
+                                        <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                          <span>Policy #: {policy.policyNumber}</span>
+                                          {policy.nominee && <span>Nominee: {policy.nominee}</span>}
+                                        </div>
+                                        <div className="mt-2 text-xs text-gray-500">
+                                          <span>Issue Date: {new Date(policy.issueDate).toLocaleDateString()}</span>
+                                          {maturityDate && (
+                                            <>
+                                              <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                              {isMatured && (
+                                                <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                              )}
+                                            </>
+                                          )}
+                                          {policy.premiumPaymentDate && (
+                                            <span className="ml-4">Next Premium: {new Date(policy.premiumPaymentDate).toLocaleDateString()}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center space-x-1">
+                                        <button
+                                          onClick={() => {
+                                            setEditingInsurancePolicyId(policy.id);
+                                            setSelectedAssetType("insurance_policy");
+                                            setInsuranceName(policy.insuranceName);
+                                            setPolicyNumber(policy.policyNumber);
+                                            setAmountInsured(policy.amountInsured.toString());
+                                            setIssueDate(policy.issueDate);
+                                            setDateOfMaturity(policy.dateOfMaturity);
+                                            setPremium(policy.premium.toString());
+                                            setNominee(policy.nominee || "");
+                                            setPremiumPaymentDate(policy.premiumPaymentDate || "");
+                                            setIsAddAssetModalOpen(true);
+                                          }}
+                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                          title="Edit insurance policy"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                            />
+                                          </svg>
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            if (window.confirm(`Are you sure you want to delete ${policy.insuranceName} insurance policy? This action cannot be undone.`)) {
+                                              const dbId = policy.dbId || policy.id;
+                                              const deleted = await deleteAssetFromDatabase(dbId);
+                                              
+                                              if (deleted) {
+                                                // Remove from state
+                                                setInsurancePolicies((prev) => {
+                                                  const updatedPolicies = prev[selectedMarket].filter(p => p.id !== policy.id);
+                                                  
+                                                  // Recalculate net worth
+                                                  const updatedStocks = stocks[selectedMarket];
+                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                  const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                  const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                  // Insurance policies are NOT included in net worth calculation
+                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                                                  
+                                                  setNetWorth((prev) => ({
+                                                    ...prev,
+                                                    [selectedMarket]: newNetWorth,
+                                                  }));
+                                                  
+                                                  return {
+                                                    ...prev,
+                                                    [selectedMarket]: updatedPolicies,
+                                                  };
+                                                });
+                                              } else {
+                                                alert("Failed to delete insurance policy. Please try again.");
+                                              }
+                                            }
+                                          }}
+                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                          title="Delete insurance policy"
+                                        >
+                                          <svg
+                                            className="h-4 w-4"
+                                            fill="none"
+                                            viewBox="0 0 24 24"
+                                            stroke="currentColor"
+                                          >
+                                            <path
+                                              strokeLinecap="round"
+                                              strokeLinejoin="round"
+                                              strokeWidth={2}
+                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                            />
+                                          </svg>
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                      <div>
+                                        <p className="text-xs text-gray-500 mb-1">Amount Insured</p>
+                                        <p className="text-sm font-semibold text-gray-900">
+                                          {currentMarket.symbol}
+                                          {policy.amountInsured.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </p>
+                                      </div>
+                                      <div className="text-right">
+                                        <p className="text-xs text-gray-500 mb-1">Premium</p>
+                                        <p className="text-sm font-semibold text-gray-900">
+                                          {currentMarket.symbol}
+                                          {policy.premium.toLocaleString("en-IN", {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          })}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2143,6 +2484,114 @@ export default function AssetsPage() {
                         };
                       });
                     }
+                  } else if (selectedAssetType === "insurance_policy") {
+                    const amountInsuredValue = parseFloat(amountInsured) || 0;
+                    const premiumValue = parseFloat(premium) || 0;
+                    
+                    if (editingInsurancePolicyId) {
+                      // Update existing insurance policy
+                      setInsurancePolicies((prev) => {
+                        const marketPolicies = prev[selectedMarket];
+                        const policyIndex = marketPolicies.findIndex(p => p.id === editingInsurancePolicyId);
+                        
+                        if (policyIndex >= 0) {
+                          // Update the policy
+                          const updatedPolicies = [...marketPolicies];
+                          updatedPolicies[policyIndex] = {
+                            ...marketPolicies[policyIndex],
+                            insuranceName: insuranceName,
+                            policyNumber: policyNumber,
+                            amountInsured: amountInsuredValue,
+                            issueDate: issueDate,
+                            dateOfMaturity: dateOfMaturity,
+                            premium: premiumValue,
+                            nominee: nominee || undefined,
+                            premiumPaymentDate: premiumPaymentDate || undefined,
+                          };
+                          
+                          // Save to database (async, but don't wait)
+                          saveInsurancePolicyToDatabase(updatedPolicies[policyIndex], selectedMarket).catch(console.error);
+                          
+                          // Calculate new net worth with updated policies
+                          const updatedStocks = stocks[selectedMarket];
+                          const updatedBankAccounts = bankAccounts[selectedMarket];
+                          const updatedMutualFunds = mutualFunds[selectedMarket];
+                          const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                          const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                          const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                          const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                          const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                          // Insurance policies are NOT included in net worth calculation
+                          const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                          
+                          setNetWorth((prev) => ({
+                            ...prev,
+                            [selectedMarket]: newNetWorth,
+                          }));
+                          
+                          return {
+                            ...prev,
+                            [selectedMarket]: updatedPolicies,
+                          };
+                        }
+                        return prev;
+                      });
+                      
+                      setEditingInsurancePolicyId(null);
+                    } else {
+                      // Add new insurance policy
+                      const tempId = `insurance-policy-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                      const newInsurancePolicy: typeof insurancePolicies.india[0] = {
+                        id: tempId,
+                        insuranceName: insuranceName,
+                        policyNumber: policyNumber,
+                        amountInsured: amountInsuredValue,
+                        issueDate: issueDate,
+                        dateOfMaturity: dateOfMaturity,
+                        premium: premiumValue,
+                        nominee: nominee || undefined,
+                        premiumPaymentDate: premiumPaymentDate || undefined,
+                      };
+                      
+                      // Save to database
+                      try {
+                        const dbId = await saveInsurancePolicyToDatabase(newInsurancePolicy, selectedMarket);
+                        if (dbId && typeof dbId === 'string') {
+                          newInsurancePolicy.dbId = dbId;
+                          newInsurancePolicy.id = dbId; // Use database ID as the main ID
+                        }
+                      } catch (error) {
+                        console.error("Error saving insurance policy:", error);
+                        alert("Failed to save insurance policy. Please try again.");
+                        return; // Don't add to state if save failed
+                      }
+                      
+                      setInsurancePolicies((prev) => {
+                        const updatedPolicies = [...prev[selectedMarket], newInsurancePolicy];
+                        
+                        // Calculate new net worth with updated policies
+                        const updatedStocks = stocks[selectedMarket];
+                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                        const stocksTotal = updatedStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                        // Insurance policies are NOT included in net worth calculation
+                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal;
+                        
+                        setNetWorth((prev) => ({
+                          ...prev,
+                          [selectedMarket]: newNetWorth,
+                        }));
+                        
+                        return {
+                          ...prev,
+                          [selectedMarket]: updatedPolicies,
+                        };
+                      });
+                    }
                   }
                   
                   // Reset form
@@ -2166,10 +2615,19 @@ export default function AssetsPage() {
                   setFdRate("");
                   setFdDuration("");
                   setFdStartDate(new Date().toISOString().split('T')[0]);
+                  setInsuranceName("");
+                  setPolicyNumber("");
+                  setAmountInsured("");
+                  setIssueDate(new Date().toISOString().split('T')[0]);
+                  setDateOfMaturity("");
+                  setPremium("");
+                  setNominee("");
+                  setPremiumPaymentDate("");
                   setEditingStockId(null);
                   setEditingBankAccountId(null);
                   setEditingMutualFundId(null);
                   setEditingFixedDepositId(null);
+                  setEditingInsurancePolicyId(null);
                   setIsAddAssetModalOpen(false);
                 }}
                 className="space-y-4"
@@ -2620,6 +3078,156 @@ export default function AssetsPage() {
                   </div>
                 )}
 
+                {/* Insurance Policy-specific fields */}
+                {selectedAssetType === "insurance_policy" && (
+                  <div className="space-y-4">
+                    <div>
+                      <label
+                        htmlFor="insurance-name"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Insurance Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="insurance-name"
+                        value={insuranceName}
+                        onChange={(e) => setInsuranceName(e.target.value)}
+                        required
+                        placeholder="e.g., Life Insurance, Health Insurance"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="policy-number"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Policy Number <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        id="policy-number"
+                        value={policyNumber}
+                        onChange={(e) => setPolicyNumber(e.target.value)}
+                        required
+                        placeholder="Enter policy number"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="amount-insured"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Amount Insured ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="amount-insured"
+                        value={amountInsured}
+                        onChange={(e) => setAmountInsured(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter coverage amount"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="issue-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Issue Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="issue-date"
+                        value={issueDate}
+                        onChange={(e) => setIssueDate(e.target.value)}
+                        required
+                        max={new Date().toISOString().split('T')[0]}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="date-of-maturity"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Date of Maturity <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        id="date-of-maturity"
+                        value={dateOfMaturity}
+                        onChange={(e) => setDateOfMaturity(e.target.value)}
+                        required
+                        min={issueDate}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="premium"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Premium ({currentMarket.symbol}) <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        id="premium"
+                        value={premium}
+                        onChange={(e) => setPremium(e.target.value)}
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="Enter premium amount"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="nominee"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Nominee
+                      </label>
+                      <input
+                        type="text"
+                        id="nominee"
+                        value={nominee}
+                        onChange={(e) => setNominee(e.target.value)}
+                        placeholder="Enter nominee name (optional)"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label
+                        htmlFor="premium-payment-date"
+                        className="block text-sm font-medium text-gray-700 mb-2"
+                      >
+                        Premium Payment Date
+                      </label>
+                      <input
+                        type="date"
+                        id="premium-payment-date"
+                        value={premiumPaymentDate}
+                        onChange={(e) => setPremiumPaymentDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* Form Actions */}
                 <div className="flex items-center justify-end space-x-3 pt-4">
                   <button
@@ -2643,10 +3251,19 @@ export default function AssetsPage() {
                       setFdAmount("");
                       setFdRate("");
                       setFdDuration("");
+                      setInsuranceName("");
+                      setPolicyNumber("");
+                      setAmountInsured("");
+                      setIssueDate(new Date().toISOString().split('T')[0]);
+                      setDateOfMaturity("");
+                      setPremium("");
+                      setNominee("");
+                      setPremiumPaymentDate("");
                       setEditingStockId(null);
                       setEditingBankAccountId(null);
                       setEditingMutualFundId(null);
                       setEditingFixedDepositId(null);
+                      setEditingInsurancePolicyId(null);
                     }}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
                   >

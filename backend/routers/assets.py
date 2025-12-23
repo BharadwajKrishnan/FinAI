@@ -94,7 +94,8 @@ async def create_asset(
         print(f"Creating asset for user {user_id}: type={asset_data.get('type')}, name={asset_data.get('name')}, is_active={asset_data.get('is_active')}")
         
         # Convert date objects to strings for Supabase
-        date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date']
+        date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
+                       'issue_date', 'date_of_maturity', 'premium_payment_date']
         for field in date_fields:
             if field in asset_data and asset_data[field]:
                 asset_data[field] = asset_data[field].isoformat() if hasattr(asset_data[field], 'isoformat') else asset_data[field]
@@ -102,7 +103,8 @@ async def create_asset(
         # Convert Decimal to string for Supabase
         decimal_fields = [
             'current_value', 'quantity', 'purchase_price', 'current_price',
-            'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate'
+            'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+            'amount_insured', 'premium'
         ]
         for field in decimal_fields:
             if field in asset_data and asset_data[field] is not None:
@@ -187,7 +189,8 @@ async def update_asset(asset_id: str, asset: AssetUpdate, current_user=Depends(g
         update_data = asset.dict(exclude_unset=True, exclude_none=True)
         
         # Convert date objects to strings
-        date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date']
+        date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date',
+                       'issue_date', 'date_of_maturity', 'premium_payment_date']
         for field in date_fields:
             if field in update_data and update_data[field]:
                 update_data[field] = update_data[field].isoformat() if hasattr(update_data[field], 'isoformat') else update_data[field]
@@ -195,13 +198,28 @@ async def update_asset(asset_id: str, asset: AssetUpdate, current_user=Depends(g
         # Convert Decimal to string
         decimal_fields = [
             'current_value', 'quantity', 'purchase_price', 'current_price',
-            'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate'
+            'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+            'amount_insured', 'premium'
         ]
         for field in decimal_fields:
             if field in update_data and update_data[field] is not None:
                 update_data[field] = str(update_data[field])
         
-        response = supabase.table("assets").update(update_data).eq("id", asset_id).eq("user_id", user_id).execute()
+        # Use service role client (bypasses RLS, user already validated via get_current_user)
+        # We've already validated the user via JWT and set user_id correctly
+        # Service role bypasses RLS, but we're enforcing security at the application level
+        try:
+            response = supabase_service.table("assets").update(update_data).eq("id", asset_id).eq("user_id", user_id).execute()
+        except Exception as rls_error:
+            error_msg = str(rls_error)
+            if "row-level security" in error_msg.lower() or "42501" in error_msg:
+                # RLS is blocking - this means service role key is not set or not working
+                raise HTTPException(
+                    status_code=500,
+                    detail="RLS policy violation. Please set SUPABASE_SERVICE_ROLE_KEY in your .env file."
+                )
+            raise
+        
         if not response.data:
             raise HTTPException(status_code=404, detail="Asset not found")
         return response.data[0]
