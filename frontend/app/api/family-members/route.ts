@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+// Use the same environment variable as other API routes for consistency
+const BACKEND_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export async function GET(request: NextRequest) {
   try {
@@ -9,7 +10,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const response = await fetch(`${BACKEND_URL}/api/family-members`, {
+    // Ensure no trailing slash in backend URL
+    const backendUrl = BACKEND_URL.replace(/\/$/, "");
+    const response = await fetch(`${backendUrl}/api/family-members`, {
       method: "GET",
       headers: {
         Authorization: authHeader,
@@ -39,7 +42,9 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
 
-    const response = await fetch(`${BACKEND_URL}/api/family-members`, {
+    // Ensure no trailing slash in backend URL
+    const backendUrl = BACKEND_URL.replace(/\/$/, "");
+    const response = await fetch(`${backendUrl}/api/family-members`, {
       method: "POST",
       headers: {
         Authorization: authHeader,
