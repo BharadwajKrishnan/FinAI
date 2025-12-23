@@ -72,14 +72,6 @@ CREATE TABLE IF NOT EXISTS assets (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
--- User profiles table (extends auth.users)
-CREATE TABLE IF NOT EXISTS user_profiles (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    name VARCHAR(255),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
-);
-
 -- Chat messages table - stores conversation history
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -156,7 +148,6 @@ ALTER TABLE expenses ADD CONSTRAINT fk_expenses_family_member
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE assets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE family_members ENABLE ROW LEVEL SECURITY;
@@ -179,19 +170,6 @@ CREATE POLICY "Users can update their own assets"
 CREATE POLICY "Users can delete their own assets"
     ON assets FOR DELETE
     USING (auth.uid() = user_id);
-
--- User profiles policies
-CREATE POLICY "Users can view their own profile"
-    ON user_profiles FOR SELECT
-    USING (auth.uid() = id);
-
-CREATE POLICY "Users can update their own profile"
-    ON user_profiles FOR UPDATE
-    USING (auth.uid() = id);
-
-CREATE POLICY "Users can insert their own profile"
-    ON user_profiles FOR INSERT
-    WITH CHECK (auth.uid() = id);
 
 -- Chat messages policies
 CREATE POLICY "Users can view their own chat messages"
@@ -240,22 +218,6 @@ CREATE POLICY "Users can delete their own family members"
     ON family_members FOR DELETE
     USING (auth.uid() = user_id);
 
--- Function to automatically create user profile on signup
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO public.user_profiles (id, name)
-    VALUES (NEW.id, NEW.raw_user_meta_data->>'name');
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
--- Trigger to create profile on user creation
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-    AFTER INSERT ON auth.users
-    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -267,9 +229,6 @@ $$ LANGUAGE plpgsql;
 
 -- Triggers to update updated_at
 CREATE TRIGGER update_assets_updated_at BEFORE UPDATE ON assets
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_user_profiles_updated_at BEFORE UPDATE ON user_profiles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_expenses_updated_at BEFORE UPDATE ON expenses

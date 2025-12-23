@@ -358,16 +358,6 @@ class UserResponse(BaseModel):
     name: Optional[str] = None
 
 
-class UserProfile(BaseModel):
-    id: str
-    name: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
 # Expense Models
 class ExpenseBase(BaseModel):
     description: str = Field(..., min_length=1, max_length=255)
