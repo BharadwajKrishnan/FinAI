@@ -376,6 +376,7 @@ class ExpenseBase(BaseModel):
     category: Optional[str] = Field(None, max_length=100)
     expense_date: date
     notes: Optional[str] = None
+    family_member_id: Optional[str] = None  # Optional: assign expense to a family member
     
     @field_validator('amount', mode='before')
     @classmethod
@@ -425,6 +426,7 @@ class ExpenseUpdate(BaseModel):
     category: Optional[str] = Field(None, max_length=100)
     expense_date: Optional[date] = None
     notes: Optional[str] = None
+    family_member_id: Optional[str] = None  # Optional: assign expense to a family member
     
     @field_validator('amount', mode='before')
     @classmethod

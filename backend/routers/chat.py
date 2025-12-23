@@ -270,6 +270,11 @@ async def chat(
         expenses_data = []
         if context == "expenses":
             try:
+                # Fetch family members first
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members = {str(member["id"]): member for member in (family_members_response.data if family_members_response.data else [])}
+                print(f"Found {len(family_members)} family members for user {user_id}")
+                
                 # Use service role client (bypasses RLS, user already validated via get_current_user)
                 # This avoids JWT expiration issues
                 print(f"Fetching expenses for user_id: {user_id}")
@@ -287,6 +292,18 @@ async def chat(
                 
                 # Format expenses for LLM context
                 for expense in expenses:
+                    # Get family member information
+                    family_member_id = expense.get("family_member_id")
+                    family_member_info = None
+                    if family_member_id:
+                        member = family_members.get(str(family_member_id))
+                        if member:
+                            family_member_info = {
+                                "id": member.get("id"),
+                                "name": member.get("name"),
+                                "relationship": member.get("relationship")
+                            }
+                    
                     expense_info = {
                         "id": expense.get("id"),
                         "description": expense.get("description"),
@@ -295,22 +312,35 @@ async def chat(
                         "category": expense.get("category"),
                         "expense_date": expense.get("expense_date"),
                         "notes": expense.get("notes"),
-                        "created_at": expense.get("created_at")
+                        "created_at": expense.get("created_at"),
+                        "family_member": family_member_info if family_member_info else {"name": "Self", "relationship": "Self"}
                     }
                     expenses_data.append(expense_info)
                 
-                # Group expenses by currency for easier analysis
+                # Group expenses by currency and family member for easier analysis
                 expenses_by_currency = {}
+                expenses_by_family_member = {}
                 for expense in expenses_data:
                     currency = expense.get("currency", "USD")
                     if currency not in expenses_by_currency:
                         expenses_by_currency[currency] = []
                     expenses_by_currency[currency].append(expense)
+                    
+                    # Group by family member
+                    family_member_name = expense.get("family_member", {}).get("name", "Self")
+                    if family_member_name not in expenses_by_family_member:
+                        expenses_by_family_member[family_member_name] = []
+                    expenses_by_family_member[family_member_name].append(expense)
                 
                 print(f"Expenses grouped by currency: {list(expenses_by_currency.keys())}")
                 for currency, exp_list in expenses_by_currency.items():
                     total = sum(e.get("amount", 0) for e in exp_list)
                     print(f"  {currency}: {len(exp_list)} expenses, total: {total}")
+                
+                print(f"Expenses grouped by family member: {list(expenses_by_family_member.keys())}")
+                for member_name, exp_list in expenses_by_family_member.items():
+                    total = sum(e.get("amount", 0) for e in exp_list)
+                    print(f"  {member_name}: {len(exp_list)} expenses, total: {total}")
                     
             except Exception as expenses_error:
                 # If expenses fetch fails, continue without expense data
@@ -330,7 +360,20 @@ async def chat(
         # Convert expenses to JSON string (only if context is "expenses")
         expenses_json = ""
         if context == "expenses":
-            expenses_json = json.dumps(expenses_data, indent=2, default=str)
+            # Organize expenses by family member for better LLM context
+            expenses_by_family_member = {}
+            for expense in expenses_data:
+                family_member_name = expense.get("family_member", {}).get("name", "Self")
+                if family_member_name not in expenses_by_family_member:
+                    expenses_by_family_member[family_member_name] = []
+                expenses_by_family_member[family_member_name].append(expense)
+            
+            expenses_data_with_grouping = {
+                "all_expenses": expenses_data,
+                "by_family_member": expenses_by_family_member
+            }
+            
+            expenses_json = json.dumps(expenses_data_with_grouping, indent=2, default=str)
             print(f"Expenses JSON length: {len(expenses_json)} characters")
             print(f"Number of expenses in JSON: {len(expenses_data)}")
             # If expenses JSON is very large (>50KB), log a warning
@@ -504,6 +547,10 @@ The user's expense data is provided below in JSON format. Use this data to answe
 {expenses_json}
 ```
 
+The expense data is organized in two ways:
+1. "all_expenses": A flat list of all expenses
+2. "by_family_member": Expenses grouped by family member name
+
 Each expense contains:
 - description: What the expense was for
 - amount: The expense amount
@@ -511,18 +558,28 @@ Each expense contains:
 - category: Expense category (Food, Transport, Shopping, Bills, Entertainment, Healthcare, Education, Travel, Other, or null)
 - expense_date: Date when the expense was made (YYYY-MM-DD format)
 - notes: Additional notes about the expense
+- family_member: Information about who the expense belongs to:
+  - If "family_member.name" is "Self", the expense belongs to the user themselves
+  - Otherwise, it shows the family member's name and relationship (e.g., "John (Father)", "Sarah (Daughter)")
+
+IMPORTANT - Family Member Information:
+- Expenses can belong to different family members or to the user themselves (Self)
+- Use the "by_family_member" data to provide family member-specific expense analysis when requested
+- When calculating totals or analyzing spending patterns, you can provide both overall family expenses and individual family member expenses
 
 When analyzing expenses:
-1. Calculate total expenses by currency, category, month, or year as requested
-2. Identify spending patterns and trends over time
-3. Provide insights on budgeting and expense management
-4. Compare spending across different categories
-5. Help identify areas where spending can be optimized
-6. Note that expenses are in different currencies (EUR and INR) - analyze them separately or convert if needed
-7. Group expenses by month/year when providing monthly or yearly summaries
-8. When asked about specific time periods, filter expenses by the expense_date field
-9. Provide clear breakdowns with totals, averages, and percentages when relevant
-10. Suggest practical budgeting tips based on the user's spending patterns
+1. Calculate total expenses by currency, category, month, year, or family member as requested
+2. When asked about specific family members, use the "by_family_member" data to provide family member-specific insights
+3. Identify spending patterns and trends over time for the entire family or individual members
+4. Provide insights on budgeting and expense management
+5. Compare spending across different categories or family members
+6. Help identify areas where spending can be optimized
+7. Note that expenses are in different currencies (EUR and INR) - analyze them separately or convert if needed
+8. Group expenses by month/year when providing monthly or yearly summaries
+9. When asked about specific time periods, filter expenses by the expense_date field
+10. Provide clear breakdowns with totals, averages, and percentages when relevant
+11. Suggest practical budgeting tips based on the user's spending patterns
+12. When calculating expense totals or budgets, you can provide both overall family expenses and individual family member expenses
 </Current_Expenses>"""
         
         else:

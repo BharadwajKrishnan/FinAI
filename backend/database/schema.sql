@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     
     -- Additional metadata
     notes TEXT, -- User notes about the expense
+    family_member_id UUID, -- Optional: assign expense to a family member
     
     -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
@@ -144,9 +145,13 @@ CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category) WHERE category IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_family_members_user_id ON family_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_assets_family_member_id ON assets(family_member_id) WHERE family_member_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_expenses_family_member_id ON expenses(family_member_id) WHERE family_member_id IS NOT NULL;
 
 -- Add foreign key constraint for family_member_id
 ALTER TABLE assets ADD CONSTRAINT fk_assets_family_member 
+    FOREIGN KEY (family_member_id) REFERENCES family_members(id) ON DELETE SET NULL;
+
+ALTER TABLE expenses ADD CONSTRAINT fk_expenses_family_member 
     FOREIGN KEY (family_member_id) REFERENCES family_members(id) ON DELETE SET NULL;
 
 -- Enable Row Level Security (RLS)

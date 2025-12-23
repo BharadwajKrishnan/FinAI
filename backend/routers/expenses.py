@@ -167,13 +167,24 @@ async def create_expense(
         access_token = credentials.credentials
         
         user_id = current_user.user.id if hasattr(current_user, 'user') else current_user.id
-        expense_data = expense.model_dump() if hasattr(expense, 'model_dump') else expense.dict()
+        try:
+            expense_data = expense.model_dump(exclude_unset=True, exclude_none=False, mode='json')
+        except AttributeError:
+            expense_data = expense.dict(exclude_unset=True)
         expense_data["user_id"] = user_id
         expense_data["expense_date"] = expense_data["expense_date"].isoformat() if hasattr(expense_data["expense_date"], 'isoformat') else expense_data["expense_date"]
         
         # Convert amount to string for Supabase
         if "amount" in expense_data and expense_data["amount"] is not None:
             expense_data["amount"] = str(expense_data["amount"])
+        
+        # Always set family_member_id - null for Self, or the family member ID
+        if "family_member_id" not in expense_data or expense_data["family_member_id"] is None:
+            expense_data["family_member_id"] = None
+        else:
+            expense_data["family_member_id"] = str(expense_data["family_member_id"])
+        
+        print(f"Creating expense with family_member_id: {expense_data.get('family_member_id')}")
         
         # Try using service role client first (bypasses RLS)
         # If that fails due to RLS, fall back to user token-based client
@@ -232,7 +243,10 @@ async def update_expense(
     try:
         access_token = credentials.credentials
         user_id = current_user.user.id if hasattr(current_user, 'user') else current_user.id
-        update_data = expense.model_dump(exclude_unset=True) if hasattr(expense, 'model_dump') else expense.dict(exclude_unset=True)
+        try:
+            update_data = expense.model_dump(exclude_unset=True, exclude_none=False, mode='json')
+        except AttributeError:
+            update_data = expense.dict(exclude_unset=True)
         
         if "expense_date" in update_data and update_data["expense_date"]:
             update_data["expense_date"] = update_data["expense_date"].isoformat() if hasattr(update_data["expense_date"], 'isoformat') else update_data["expense_date"]
@@ -240,6 +254,15 @@ async def update_expense(
         # Convert amount to string for Supabase if present
         if "amount" in update_data and update_data["amount"] is not None:
             update_data["amount"] = str(update_data["amount"])
+        
+        # Always set family_member_id if it's being updated - null for Self, or the family member ID
+        if "family_member_id" in update_data:
+            if update_data["family_member_id"] is None:
+                update_data["family_member_id"] = None
+            else:
+                update_data["family_member_id"] = str(update_data["family_member_id"])
+        
+        print(f"Updating expense with family_member_id: {update_data.get('family_member_id')}")
         
         # Try service role first, fall back to user token if RLS blocks
         try:

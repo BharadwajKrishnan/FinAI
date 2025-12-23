@@ -12,6 +12,7 @@ type Expense = {
   category?: string;
   expense_date: string;
   notes?: string;
+  family_member_id?: string;
   created_at: string;
   updated_at: string;
 };
@@ -69,6 +70,20 @@ export default function ExpensesPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [monthTotal, setMonthTotal] = useState<number>(0);
+  
+  // Family members state (for expense assignment and filtering)
+  const [familyMembers, setFamilyMembers] = useState<Array<{
+    id: string;
+    name: string;
+    relationship: string;
+    notes?: string;
+  }>>([]);
+  
+  // Family member filter for expenses
+  const [selectedFamilyMemberFilter, setSelectedFamilyMemberFilter] = useState<string | "all">("all");
+  
+  // Selected family member for expense form
+  const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState<string | undefined>(undefined);
 
   // Helper function to format date as YYYY-MM-DD without timezone issues
   const formatDateString = (year: number, month: number, day: number) => {
@@ -102,6 +117,70 @@ export default function ExpensesPage() {
       notes: "",
     };
   });
+  
+  // Fetch family members from database
+  const fetchFamilyMembers = async () => {
+    try {
+      const accessToken = getAuthToken();
+      if (!accessToken) return;
+
+      const response = await fetch("/api/family-members", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (response.ok) {
+        const members = await response.json();
+        setFamilyMembers(members || []);
+      } else if (response.status === 401) {
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
+        window.location.href = "/";
+      }
+    } catch (error) {
+      console.error("Error fetching family members:", error);
+    }
+  };
+  
+  // Filter expenses based on selected family member
+  const filterExpensesByFamilyMember = (expensesList: Expense[]): Expense[] => {
+    if (selectedFamilyMemberFilter === "all") {
+      return expensesList;
+    }
+    if (selectedFamilyMemberFilter === "") {
+      // Show only unassigned expenses (Self) - expenses with no family_member_id
+      return expensesList.filter(expense => {
+        const memberId = expense.family_member_id;
+        // Expense belongs to Self if family_member_id is null, undefined, or empty string
+        return !memberId || memberId === null || memberId === undefined || memberId === "";
+      });
+    }
+    // Show only expenses assigned to the selected family member
+    // Use strict comparison to ensure exact match
+    return expensesList.filter(expense => {
+      const memberId = expense.family_member_id;
+      // Only include if memberId exists and matches exactly
+      if (!memberId || memberId === null || memberId === undefined || memberId === "") {
+        return false;
+      }
+      return String(memberId).trim() === String(selectedFamilyMemberFilter).trim();
+    });
+  };
+  
+  // Helper function to get family member name from familyMemberId
+  const getFamilyMemberName = (familyMemberId?: string): string => {
+    if (!familyMemberId || familyMemberId === null || familyMemberId === undefined || familyMemberId === "") {
+      return "Self";
+    }
+    const member = familyMembers.find(m => m.id === familyMemberId);
+    return member ? `${member.name} (${member.relationship})` : "Unknown";
+  };
+  
+  // Get filtered expenses for display
+  const getFilteredExpenses = (): Expense[] => {
+    return filterExpensesByFamilyMember(expenses);
+  };
 
   const getAuthToken = () => {
     return localStorage.getItem("access_token");
@@ -156,13 +235,20 @@ export default function ExpensesPage() {
       if (data.length > 0) {
         console.log("Sample expense:", data[0]);
         console.log("Sample expense date:", data[0].expense_date);
+        console.log("Sample expense family_member_id:", data[0].family_member_id);
       }
       
-      // Show all expenses (don't filter by currency)
-      setExpenses(data);
+      // Ensure family_member_id is properly parsed (convert null to undefined for consistency)
+      const parsedExpenses = data.map((expense: any) => ({
+        ...expense,
+        family_member_id: expense.family_member_id ? String(expense.family_member_id) : undefined,
+      }));
       
-      // Calculate total only for expenses in the selected currency
-      const total = data
+      // Show all expenses (don't filter by currency)
+      setExpenses(parsedExpenses);
+      
+      // Calculate total for all expenses in the selected currency (filtering by family member happens in display)
+      const total = parsedExpenses
         .filter((expense: Expense) => expense.currency === selectedCurrency)
         .reduce((sum: number, expense: Expense) => sum + parseFloat(expense.amount.toString()), 0);
       setMonthTotal(total);
@@ -179,6 +265,7 @@ export default function ExpensesPage() {
 
   useEffect(() => {
     fetchExpenses();
+    fetchFamilyMembers();
   }, [selectedYear, selectedMonth, selectedCurrency]);
   
   // Update form currency and date when selectedCurrency/month/year changes (only if not editing)
@@ -231,12 +318,15 @@ export default function ExpensesPage() {
         }
       }
       
-      const expenseData = {
+      const expenseData: any = {
         ...formData,
         amount: parseFloat(formData.amount),
         currency: editingExpense ? formData.currency : selectedCurrency, // Use selectedCurrency for new expenses, keep original for edits
         expense_date: expenseDate, // Use corrected date
       };
+      
+      // Always set family_member_id - null for Self, or the family member ID
+      expenseData.family_member_id = selectedFamilyMemberId || null;
 
       // Debug: Log expense data being sent
       console.log("Saving expense:", expenseData);
@@ -286,6 +376,7 @@ export default function ExpensesPage() {
         expense_date: getDefaultDate(),
         notes: "",
       });
+      setSelectedFamilyMemberId(undefined);
       setEditingExpense(null);
       setIsAddExpenseModalOpen(false);
       
@@ -346,6 +437,7 @@ export default function ExpensesPage() {
       expense_date: expense.expense_date,
       notes: expense.notes || "",
     });
+    setSelectedFamilyMemberId(expense.family_member_id);
     setIsAddExpenseModalOpen(true);
   };
 
@@ -440,6 +532,30 @@ export default function ExpensesPage() {
                 <option value="INR">Indian Rupee (₹)</option>
               </select>
             </div>
+            {/* Family Member Filter Dropdown */}
+            {familyMembers.length > 0 && (
+              <div className="flex items-center space-x-2">
+                <label htmlFor="family-member-filter" className="text-sm font-medium text-gray-700">
+                  Filter by:
+                </label>
+                <select
+                  id="family-member-filter"
+                  value={selectedFamilyMemberFilter}
+                  onChange={(e) => {
+                    setSelectedFamilyMemberFilter(e.target.value as string | "all");
+                  }}
+                  className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                >
+                  <option value="all">All Family Members</option>
+                  <option value="">Self</option>
+                  {familyMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.name} ({member.relationship})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <button
               onClick={() => (window.location.href = "/assets")}
               className="px-4 py-2 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
@@ -476,17 +592,27 @@ export default function ExpensesPage() {
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-xl font-semibold text-gray-900">
-                      {monthNames[selectedMonth - 1]} {selectedYear}
+                      {selectedFamilyMemberFilter === "all"
+                        ? `${monthNames[selectedMonth - 1]} ${selectedYear} - All Family`
+                        : selectedFamilyMemberFilter === ""
+                        ? `${monthNames[selectedMonth - 1]} ${selectedYear} - Self`
+                        : familyMembers.find(m => m.id === selectedFamilyMemberFilter)
+                          ? `${monthNames[selectedMonth - 1]} ${selectedYear} - ${familyMembers.find(m => m.id === selectedFamilyMemberFilter)?.name}`
+                          : `${monthNames[selectedMonth - 1]} ${selectedYear}`}
                     </h2>
                     <div className="text-2xl font-bold text-primary-600">
-                      {formatCurrency(monthTotal)}
+                      {formatCurrency(
+                        getFilteredExpenses()
+                          .filter((e: Expense) => e.currency === selectedCurrency)
+                          .reduce((sum: number, expense: Expense) => sum + parseFloat(expense.amount.toString()), 0)
+                      )}
                     </div>
                   </div>
                   <p className="text-sm text-gray-600">
-                    {expenses.length} expense{expenses.length !== 1 ? "s" : ""} for this month
-                    {expenses.filter((e: Expense) => e.currency === selectedCurrency).length !== expenses.length && (
+                    {getFilteredExpenses().length} expense{getFilteredExpenses().length !== 1 ? "s" : ""} for this month
+                    {getFilteredExpenses().filter((e: Expense) => e.currency === selectedCurrency).length !== getFilteredExpenses().length && (
                       <span className="ml-2 text-gray-500">
-                        ({expenses.filter((e: Expense) => e.currency === selectedCurrency).length} in {selectedCurrency === "EUR" ? "€" : "₹"})
+                        ({getFilteredExpenses().filter((e: Expense) => e.currency === selectedCurrency).length} in {selectedCurrency === "EUR" ? "€" : "₹"})
                       </span>
                     )}
                   </p>
@@ -498,11 +624,34 @@ export default function ExpensesPage() {
                     <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
                     <p className="mt-2 text-gray-600">Loading expenses...</p>
                   </div>
-                ) : expenses.length > 0 ? (
+                ) : getFilteredExpenses().length > 0 ? (
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                     <div className="p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-medium text-gray-900">
+                          Expenses
+                        </h3>
+                        <button
+                          onClick={() => {
+                            setEditingExpense(null);
+                            setSelectedFamilyMemberId(undefined);
+                            setFormData({
+                              description: "",
+                              amount: "",
+                              currency: selectedCurrency,
+                              category: "",
+                              expense_date: getDefaultDate(),
+                              notes: "",
+                            });
+                            setIsAddExpenseModalOpen(true);
+                          }}
+                          className="px-4 py-2 text-sm font-medium bg-primary-600 text-white rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                        >
+                          + Add Expense
+                        </button>
+                      </div>
                       <div className="space-y-3">
-                        {expenses.map((expense) => (
+                        {getFilteredExpenses().map((expense) => (
                           <div
                             key={expense.id}
                             className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
@@ -515,6 +664,11 @@ export default function ExpensesPage() {
                                 {expense.category && (
                                   <span className="px-2 py-1 text-xs font-medium bg-primary-100 text-primary-800 rounded-full">
                                     {expense.category}
+                                  </span>
+                                )}
+                                {selectedFamilyMemberFilter === "all" && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                                    {getFamilyMemberName(expense.family_member_id)}
                                   </span>
                                 )}
                               </div>
@@ -599,6 +753,7 @@ export default function ExpensesPage() {
                     <button
                       onClick={() => {
                         setEditingExpense(null);
+                        setSelectedFamilyMemberId(undefined);
                         setFormData({
                           description: "",
                           amount: "",
@@ -635,6 +790,7 @@ export default function ExpensesPage() {
                   onClick={() => {
                     setIsAddExpenseModalOpen(false);
                     setEditingExpense(null);
+                    setSelectedFamilyMemberId(undefined);
                     setFormData({
                       description: "",
                       amount: "",
@@ -743,12 +899,36 @@ export default function ExpensesPage() {
                   />
                 </div>
 
+                {/* Family Member Assignment (Optional) */}
+                <div className="pt-4 border-t border-gray-200">
+                  <label
+                    htmlFor="expense-family-member"
+                    className="block text-sm font-medium text-gray-700 mb-2"
+                  >
+                    Assign to Family Member <span className="text-gray-400 text-xs">(Optional)</span>
+                  </label>
+                  <select
+                    id="expense-family-member"
+                    value={selectedFamilyMemberId || ""}
+                    onChange={(e) => setSelectedFamilyMemberId(e.target.value || undefined)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                  >
+                    <option value="">Self</option>
+                    {familyMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name} ({member.relationship})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="flex space-x-3 pt-4">
                   <button
                     type="button"
                     onClick={() => {
                       setIsAddExpenseModalOpen(false);
                       setEditingExpense(null);
+                      setSelectedFamilyMemberId(undefined);
                       setFormData({
                         description: "",
                         amount: "",
