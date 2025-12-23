@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS assets (
     -- Additional metadata
     notes TEXT, -- User notes about the asset
     is_active BOOLEAN DEFAULT true,
+    family_member_id UUID, -- Optional: assign asset to a family member
     
     -- Timestamps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
@@ -110,6 +111,23 @@ CREATE TABLE IF NOT EXISTS expenses (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
+-- Family Members table - tracks family members for net worth calculation
+CREATE TABLE IF NOT EXISTS family_members (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    
+    -- Family member details
+    name VARCHAR(255) NOT NULL, -- Name of the family member
+    relationship VARCHAR(50) NOT NULL CHECK (relationship IN ('Son', 'Daughter', 'Spouse', 'Father', 'Mother', 'Grandfather', 'Grandmother', 'Brother', 'Sister')),
+    
+    -- Additional metadata
+    notes TEXT, -- User notes about the family member
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_assets_user_id ON assets(user_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type);
@@ -124,12 +142,19 @@ CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, expense_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category) WHERE category IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_family_members_user_id ON family_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_assets_family_member_id ON assets(family_member_id) WHERE family_member_id IS NOT NULL;
+
+-- Add foreign key constraint for family_member_id
+ALTER TABLE assets ADD CONSTRAINT fk_assets_family_member 
+    FOREIGN KEY (family_member_id) REFERENCES family_members(id) ON DELETE SET NULL;
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE assets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE family_members ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies: Users can only access their own data
 
@@ -193,6 +218,23 @@ CREATE POLICY "Users can delete their own expenses"
     ON expenses FOR DELETE
     USING (auth.uid() = user_id);
 
+-- Family members policies
+CREATE POLICY "Users can view their own family members"
+    ON family_members FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own family members"
+    ON family_members FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own family members"
+    ON family_members FOR UPDATE
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own family members"
+    ON family_members FOR DELETE
+    USING (auth.uid() = user_id);
+
 -- Function to automatically create user profile on signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
@@ -226,4 +268,7 @@ CREATE TRIGGER update_user_profiles_updated_at BEFORE UPDATE ON user_profiles
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_expenses_updated_at BEFORE UPDATE ON expenses
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_family_members_updated_at BEFORE UPDATE ON family_members
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

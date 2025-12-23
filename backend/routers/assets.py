@@ -32,7 +32,10 @@ async def get_assets(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid user ID format")
         
-        query = supabase.table("assets").select("*").eq("user_id", user_id)
+        # Use service role client (bypasses RLS, user already validated via get_current_user)
+        # This avoids JWT expiration issues
+        supabase_client = supabase_service
+        query = supabase_client.table("assets").select("*").eq("user_id", user_id)
         
         if asset_type:
             query = query.eq("type", asset_type.value)
@@ -40,16 +43,33 @@ async def get_assets(
             query = query.eq("is_active", is_active)
         else:
             # Default to only active assets if not specified
-            query = query.eq("is_active", True)
+            # For backward compatibility, also include assets where is_active is NULL
+            # We'll filter in Python to handle NULL values
+            pass  # Don't filter by is_active - we'll handle NULL in Python
         
         query = query.order("created_at", desc=True)
+        
+        # Debug: Log the query before execution
+        print(f"Fetching assets for user_id={user_id}, asset_type={asset_type}, is_active={is_active}")
+        
         response = query.execute()
+        all_assets = response.data if response.data else []
         
-        print(f"Fetched {len(response.data) if response.data else 0} assets for user {user_id}")
-        if response.data and len(response.data) > 0:
-            print(f"Sample asset: {response.data[0]}")
+        # Filter by is_active if not explicitly specified
+        # Include assets where is_active is True or NULL (NULL treated as active for backward compatibility)
+        if is_active is None:
+            assets = [a for a in all_assets if a.get("is_active") is True or a.get("is_active") is None]
+        else:
+            assets = all_assets
         
-        return response.data
+        print(f"Fetched {len(assets)} assets for user {user_id} (out of {len(all_assets)} total)")
+        if len(assets) > 0:
+            print(f"Sample asset: {assets[0]}")
+        elif len(all_assets) > 0:
+            print(f"Warning: {len(all_assets)} assets found but filtered to {len(assets)} based on is_active filter")
+            print(f"Sample asset (all): {all_assets[0]}")
+        
+        return assets
     except Exception as e:
         import traceback
         import logging

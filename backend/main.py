@@ -221,11 +221,12 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
 
 
 # Include routers
-from routers import assets, chat, expenses
+from routers import assets, chat, expenses, family_members
 
 app.include_router(assets.router)
 app.include_router(chat.router)
 app.include_router(expenses.router)
+app.include_router(family_members.router)
 
 
 if __name__ == "__main__":

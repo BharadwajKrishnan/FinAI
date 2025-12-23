@@ -24,6 +24,18 @@ class BankAccountType(str, Enum):
     CURRENT = "current"
 
 
+class FamilyMemberRelationship(str, Enum):
+    SON = "Son"
+    DAUGHTER = "Daughter"
+    SPOUSE = "Spouse"
+    FATHER = "Father"
+    MOTHER = "Mother"
+    GRANDFATHER = "Grandfather"
+    GRANDMOTHER = "Grandmother"
+    BROTHER = "Brother"
+    SISTER = "Sister"
+
+
 # Base Asset Model
 class AssetBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
@@ -32,6 +44,7 @@ class AssetBase(BaseModel):
     currency: str = Field(default="USD", max_length=3)
     notes: Optional[str] = None
     is_active: bool = Field(default=True)
+    family_member_id: Optional[str] = None  # Optional: assign asset to a family member
     
     @field_validator('current_value', mode='before')
     @classmethod
@@ -224,6 +237,7 @@ class AssetUpdate(BaseModel):
     currency: Optional[str] = Field(None, max_length=3)
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    family_member_id: Optional[str] = None
     
     # Stock fields
     stock_symbol: Optional[str] = Field(None, max_length=20)
@@ -327,6 +341,8 @@ class Asset(AssetBase):
     commodity_quantity: Optional[Decimal] = None
     commodity_purchase_date: Optional[date] = None
     commodity_purchase_price: Optional[Decimal] = None
+    
+    family_member_id: Optional[str] = None
     
     created_at: datetime
     updated_at: datetime
@@ -437,6 +453,40 @@ class ExpenseUpdate(BaseModel):
 
 
 class Expense(ExpenseBase):
+    id: str
+    user_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Family Member Models
+class FamilyMemberBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    relationship: FamilyMemberRelationship
+    notes: Optional[str] = None
+
+
+class FamilyMemberCreate(FamilyMemberBase):
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "John Doe",
+                "relationship": "Son",
+                "notes": "Eldest son"
+            }
+        }
+
+
+class FamilyMemberUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    relationship: Optional[FamilyMemberRelationship] = None
+    notes: Optional[str] = None
+
+
+class FamilyMember(FamilyMemberBase):
     id: str
     user_id: str
     created_at: datetime

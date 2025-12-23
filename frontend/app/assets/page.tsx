@@ -71,11 +71,20 @@ export default function AssetsPage() {
   const [editingInsurancePolicyId, setEditingInsurancePolicyId] = useState<string | null>(null);
   const [editingCommodityId, setEditingCommodityId] = useState<string | null>(null);
   
+  // Family members state (for filtering only - management moved to Profile page)
+  const [familyMembers, setFamilyMembers] = useState<Array<{
+    id: string;
+    name: string;
+    relationship: string;
+    notes?: string;
+  }>>([]);
+  
   // Separate net worth for each market
   const [netWorth, setNetWorth] = useState<Record<Market, number>>({
     india: 0,
     europe: 0,
   });
+  
   
   // Store stocks by market
   const [stocks, setStocks] = useState<Record<Market, Array<{
@@ -88,6 +97,7 @@ export default function AssetsPage() {
     totalInvested: number; // Total amount invested
     actualWorth: number; // Current market value (for now same as invested, will be updated with real-time prices)
     purchaseDate?: string; // Purchase date
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -100,6 +110,7 @@ export default function AssetsPage() {
     bankName: string;
     accountNumber?: string;
     balance: number;
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -115,6 +126,7 @@ export default function AssetsPage() {
     totalInvested: number; // NAV * Units
     currentWorth: number; // Current NAV * Units (for now same as invested, can be updated later)
     purchaseDate?: string; // Purchase date
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -131,6 +143,7 @@ export default function AssetsPage() {
     maturityAmount: number; // Calculated amount at maturity
     startDate: string; // Start date of FD
     maturityDate: string; // Calculated maturity date
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -148,6 +161,7 @@ export default function AssetsPage() {
     premium: number;
     nominee?: string;
     premiumPaymentDate?: string;
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -164,6 +178,7 @@ export default function AssetsPage() {
     purchaseDate: string;
     purchasePrice: number;
     currentValue: number; // Current value of the commodity
+    familyMemberId?: string; // Optional: assigned to a family member
   }>>>({
     india: [],
     europe: [],
@@ -215,6 +230,12 @@ export default function AssetsPage() {
   const [commodityUnits, setCommodityUnits] = useState("grams");
   const [commodityPurchaseDate, setCommodityPurchaseDate] = useState(new Date().toISOString().split('T')[0]);
   const [commodityPurchasePrice, setCommodityPurchasePrice] = useState("");
+  
+  // Family member assignment for assets
+  const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState<string | undefined>(undefined);
+  
+  // Family member filter for dashboard
+  const [selectedFamilyMemberFilter, setSelectedFamilyMemberFilter] = useState<string | "all">("all");
   
   const currentMarket = marketConfig[selectedMarket];
   const currentNetWorth = netWorth[selectedMarket];
@@ -274,6 +295,92 @@ export default function AssetsPage() {
   
   const stockTotal = calculateStockTotal();
   
+  // Filter assets based on selected family member
+  const filterAssetsByFamilyMember = <T extends { familyMemberId?: string }>(assets: T[]): T[] => {
+    if (selectedFamilyMemberFilter === "all") {
+      return assets;
+    }
+    if (selectedFamilyMemberFilter === "") {
+      // Show only unassigned assets (Self) - assets with no family_member_id
+      return assets.filter(asset => {
+        const memberId = asset.familyMemberId;
+        // Asset belongs to Self if familyMemberId is null, undefined, or empty string
+        return !memberId || memberId === null || memberId === undefined || memberId === "";
+      });
+    }
+    // Show only assets assigned to the selected family member
+    // Use strict comparison to ensure exact match
+    return assets.filter(asset => {
+      const memberId = asset.familyMemberId;
+      // Only include if memberId exists and matches exactly
+      if (!memberId || memberId === null || memberId === undefined || memberId === "") {
+        return false;
+      }
+      return String(memberId).trim() === String(selectedFamilyMemberFilter).trim();
+    });
+  };
+  
+  // Get filtered assets for display
+  const getFilteredStocks = (market: Market) => filterAssetsByFamilyMember(stocks[market]);
+  const getFilteredBankAccounts = (market: Market) => filterAssetsByFamilyMember(bankAccounts[market]);
+  const getFilteredMutualFunds = (market: Market) => filterAssetsByFamilyMember(mutualFunds[market]);
+  const getFilteredFixedDeposits = (market: Market) => filterAssetsByFamilyMember(fixedDeposits[market]);
+  const getFilteredCommodities = (market: Market) => filterAssetsByFamilyMember(commodities[market]);
+  const getFilteredInsurancePolicies = (market: Market) => filterAssetsByFamilyMember(insurancePolicies[market]);
+  
+  // Helper function to get family member name from familyMemberId
+  const getFamilyMemberName = (familyMemberId?: string): string => {
+    if (!familyMemberId || familyMemberId === null || familyMemberId === undefined || familyMemberId === "") {
+      return "Self";
+    }
+    const member = familyMembers.find(m => m.id === familyMemberId);
+    return member ? `${member.name} (${member.relationship})` : "Unknown";
+  };
+  
+  // Calculate filtered net worth
+  const calculateFilteredNetWorth = (market: Market): number => {
+    const filteredStocks = getFilteredStocks(market);
+    const filteredBankAccounts = getFilteredBankAccounts(market);
+    const filteredMutualFunds = getFilteredMutualFunds(market);
+    const filteredFixedDeposits = getFilteredFixedDeposits(market);
+    const filteredCommodities = getFilteredCommodities(market);
+    
+    const stocksTotal = filteredStocks.reduce((sum, stock) => sum + stock.actualWorth, 0);
+    const bankAccountsTotal = filteredBankAccounts.reduce((sum, account) => sum + account.balance, 0);
+    const mutualFundsTotal = filteredMutualFunds.reduce((sum, fund) => sum + fund.currentWorth, 0);
+    const fixedDepositsTotal = filteredFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+    const commoditiesTotal = filteredCommodities.reduce((sum, commodity) => sum + commodity.currentValue, 0);
+    
+    return stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+  };
+  
+  // Fetch family members from database
+  const fetchFamilyMembers = async () => {
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) return;
+
+      const response = await fetch("/api/family-members", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (response.ok) {
+        const members = await response.json();
+        setFamilyMembers(members || []);
+      } else if (response.status === 401) {
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
+        window.location.href = "/";
+      }
+    } catch (error) {
+      console.error("Error fetching family members:", error);
+    }
+  };
+
+  // Note: Family member net worth calculation removed - now handled in Profile page
+
   // Fetch assets from database on component mount
   useEffect(() => {
     const fetchAssets = async () => {
@@ -336,6 +443,7 @@ export default function AssetsPage() {
                 totalInvested: totalInvested,
                 actualWorth: actualWorth, // Current market value
                 purchaseDate: asset.purchase_date || new Date().toISOString().split('T')[0],
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -350,6 +458,7 @@ export default function AssetsPage() {
                 bankName: asset.bank_name || asset.name,
                 accountNumber: asset.account_number,
                 balance: parseFloat(asset.current_value || "0"),
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -372,6 +481,7 @@ export default function AssetsPage() {
                 totalInvested: totalInvested,
                 currentWorth: currentWorth,
                 purchaseDate: asset.nav_purchase_date || new Date().toISOString().split('T')[0],
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -398,6 +508,7 @@ export default function AssetsPage() {
                 maturityAmount: maturityAmount,
                 startDate: asset.start_date || new Date().toISOString().split('T')[0],
                 maturityDate: asset.maturity_date || new Date().toISOString().split('T')[0],
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -417,6 +528,7 @@ export default function AssetsPage() {
                 premium: parseFloat(asset.premium || "0"),
                 nominee: asset.nominee || "",
                 premiumPaymentDate: asset.premium_payment_date || "",
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -439,6 +551,7 @@ export default function AssetsPage() {
                 purchaseDate: asset.commodity_purchase_date || new Date().toISOString().split('T')[0],
                 purchasePrice: purchasePrice,
                 currentValue: currentValue,
+                familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
               
               if (market === "india") {
@@ -506,6 +619,7 @@ export default function AssetsPage() {
     };
 
     fetchAssets();
+    fetchFamilyMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
@@ -608,6 +722,7 @@ export default function AssetsPage() {
     quantity: number;
     totalInvested: number;
     actualWorth: number;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
@@ -619,7 +734,7 @@ export default function AssetsPage() {
       const currency = marketConfig[market].currency;
       // Calculate current price from actualWorth (current value) and quantity
       const currentPrice = stock.quantity > 0 ? (stock.actualWorth / stock.quantity) : stock.price;
-      const assetData = {
+      const assetData: any = {
         name: stock.name,
         type: "stock",
         currency: currency,
@@ -631,6 +746,9 @@ export default function AssetsPage() {
         purchase_date: stockPurchaseDate, // Use user-selected purchase date
         is_active: true, // Explicitly set is_active
       };
+
+      // Always set family_member_id - null for Self, or the family member ID
+      assetData.family_member_id = stock.familyMemberId || null;
 
       console.log(`Saving stock to database: ${stock.name}, market: ${market}, currency: ${currency}`);
 
@@ -712,13 +830,14 @@ export default function AssetsPage() {
     maturityAmount: number;
     startDate: string;
     maturityDate: string;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
       if (!accessToken) return;
 
       const currency = marketConfig[market].currency;
-      const assetData = {
+      const assetData: any = {
         name: fd.bankName,
         type: "fixed_deposit",
         currency: currency,
@@ -729,6 +848,9 @@ export default function AssetsPage() {
         current_value: fd.amountInvested.toString(), // Use principal amount, not maturity amount
         is_active: true, // Explicitly set is_active
       };
+
+      // Always set family_member_id - null for Self, or the family member ID
+      assetData.family_member_id = fd.familyMemberId || null;
 
       console.log(`Saving fixed deposit to database: ${fd.bankName}, market: ${market}, currency: ${currency}`);
 
@@ -791,6 +913,7 @@ export default function AssetsPage() {
     premium: number;
     nominee?: string;
     premiumPaymentDate?: string;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
@@ -816,6 +939,8 @@ export default function AssetsPage() {
       if (policy.premiumPaymentDate) {
         assetData.premium_payment_date = policy.premiumPaymentDate;
       }
+      // Always set family_member_id - null for Self, or the family member ID
+      assetData.family_member_id = policy.familyMemberId || null;
 
       console.log(`Saving insurance policy to database: ${policy.insuranceName}, market: ${market}, currency: ${currency}`);
 
@@ -879,6 +1004,7 @@ export default function AssetsPage() {
     purchaseDate: string;
     purchasePrice: number;
     currentValue: number;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
@@ -898,6 +1024,9 @@ export default function AssetsPage() {
         current_value: commodity.currentValue.toString(),
         is_active: true,
       };
+
+      // Always set family_member_id - null for Self, or the family member ID
+      assetData.family_member_id = commodity.familyMemberId || null;
 
       console.log(`Saving commodity to database: ${commodity.commodityName}, market: ${market}, currency: ${currency}`);
 
@@ -959,6 +1088,7 @@ export default function AssetsPage() {
     units: number;
     totalInvested: number;
     currentWorth: number;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
@@ -974,6 +1104,8 @@ export default function AssetsPage() {
         current_value: fund.currentWorth.toString(), // Use the manually set current value
         nav_purchase_date: (fund as any).purchaseDate || mutualFundPurchaseDate, // Use user-selected purchase date
         is_active: true, // Explicitly set is_active
+        // Always set family_member_id - null for Self, or the family member ID
+        family_member_id: fund.familyMemberId || null,
       };
 
       console.log(`Saving mutual fund to database: ${fund.fundName}, market: ${market}, currency: ${currency}`);
@@ -1032,13 +1164,14 @@ export default function AssetsPage() {
     bankName: string;
     accountNumber?: string;
     balance: number;
+    familyMemberId?: string;
   }, market: Market) => {
     try {
       const accessToken = localStorage.getItem("access_token");
       if (!accessToken) return;
 
       const currency = marketConfig[market].currency;
-      const assetData = {
+      const assetData: any = {
         name: account.bankName,
         type: "bank_account",
         currency: currency,
@@ -1049,6 +1182,9 @@ export default function AssetsPage() {
         notes: null,
         is_active: true, // Explicitly set is_active
       };
+
+      // Always set family_member_id - null for Self, or the family member ID
+      assetData.family_member_id = account.familyMemberId || null;
 
       console.log(`Saving bank account to database: ${account.bankName}, market: ${market}, currency: ${currency}`);
 
@@ -1134,13 +1270,38 @@ export default function AssetsPage() {
                 <option value="europe">Europe (EUR)</option>
               </select>
             </div>
+            {/* Family Member Filter Dropdown */}
+            {familyMembers.length > 0 && (
+              <div className="flex items-center space-x-2">
+                <label htmlFor="family-member-filter" className="text-sm font-medium text-gray-700">
+                  Filter by:
+                </label>
+                  <select
+                    id="family-member-filter"
+                    value={selectedFamilyMemberFilter}
+                    onChange={(e) => setSelectedFamilyMemberFilter(e.target.value as string | "all")}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                  >
+                    <option value="all">All Family Members</option>
+                    <option value="">Self</option>
+                    {familyMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name} ({member.relationship})
+                      </option>
+                    ))}
+                  </select>
+              </div>
+            )}
             <button
               onClick={() => (window.location.href = "/expenses")}
               className="px-4 py-2 text-sm bg-primary-600 text-white rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
             >
               Expense Tracker
             </button>
-            <button className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900">
+            <button
+              onClick={() => (window.location.href = "/profile")}
+              className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900"
+            >
               Profile
             </button>
             <button
@@ -1163,20 +1324,32 @@ export default function AssetsPage() {
           left={
             <div className="h-full bg-gray-50 p-8 overflow-y-auto">
               <div className="max-w-4xl mx-auto">
-                {/* Total Net Worth Section */}
+                {/* Total Family Net Worth Section */}
                 <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                        Total Net Worth
+                        {selectedFamilyMemberFilter === "all" 
+                          ? "Total Family Net Worth" 
+                          : selectedFamilyMemberFilter === ""
+                          ? "Self Net Worth"
+                          : familyMembers.find(m => m.id === selectedFamilyMemberFilter) 
+                            ? `${familyMembers.find(m => m.id === selectedFamilyMemberFilter)?.name}'s Net Worth`
+                            : "Net Worth"}
                       </h3>
-                      <p className="text-xs text-gray-400 mt-1">Individual</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {selectedFamilyMemberFilter === "all" 
+                          ? "Combined" 
+                          : selectedFamilyMemberFilter === ""
+                          ? "Your Assets"
+                          : "Filtered View"}
+                      </p>
                     </div>
                     <div className="text-right">
                       <div className="flex items-baseline space-x-2">
                         <p className="text-3xl font-bold text-gray-900">
                           {currentMarket.symbol}
-                          {currentNetWorth.toLocaleString("en-IN", {
+                          {calculateFilteredNetWorth(selectedMarket).toLocaleString("en-IN", {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
                           })}
@@ -1223,7 +1396,7 @@ export default function AssetsPage() {
                   <div className="p-6">
                     {activeTab === "stocks" && (
                       <div>
-                        {stocks[selectedMarket].length === 0 ? (
+                        {getFilteredStocks(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
                               className="mx-auto h-12 w-12 text-gray-400 mb-4"
@@ -1256,7 +1429,7 @@ export default function AssetsPage() {
                           <div className="space-y-3">
                             <div className="flex items-center justify-between mb-4">
                               <h3 className="text-sm font-medium text-gray-700">
-                                {stocks[selectedMarket].length} {stocks[selectedMarket].length === 1 ? "Stock" : "Stocks"}
+                                {getFilteredStocks(selectedMarket).length} {getFilteredStocks(selectedMarket).length === 1 ? "Stock" : "Stocks"}
                               </h3>
                               <button
                                 onClick={() => {
@@ -1269,16 +1442,23 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {stocks[selectedMarket].map((stock) => (
+                              {getFilteredStocks(selectedMarket).map((stock) => (
                                 <div
                                   key={stock.id}
                                   className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
                                 >
                                   <div className="flex items-start justify-between mb-3">
                                     <div className="flex-1">
-                                      <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                        {stock.name}
-                                      </h4>
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <h4 className="text-sm font-semibold text-gray-900">
+                                          {stock.name}
+                                        </h4>
+                                        {selectedFamilyMemberFilter === "all" && (
+                                          <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                            {getFamilyMemberName(stock.familyMemberId)}
+                                          </span>
+                                        )}
+                                      </div>
                                       <div className="flex items-center space-x-4 text-xs text-gray-600">
                                         <span>
                                           Avg. Price: {currentMarket.symbol}
@@ -1307,6 +1487,7 @@ export default function AssetsPage() {
                                           setStockQuantity(stock.quantity.toString());
                                           setStockPurchaseDate(stock.purchaseDate || new Date().toISOString().split('T')[0]);
                                           setStockCurrentWorth(stock.actualWorth.toString()); // Load current worth
+                                          setSelectedFamilyMemberId(stock.familyMemberId);
                                           setIsAddAssetModalOpen(true);
                                         }}
                                         className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -1415,7 +1596,7 @@ export default function AssetsPage() {
 
                     {activeTab === "bank_accounts" && (
                       <div>
-                        {bankAccounts[selectedMarket].length === 0 ? (
+                        {getFilteredBankAccounts(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
                               className="mx-auto h-12 w-12 text-gray-400 mb-4"
@@ -1448,7 +1629,7 @@ export default function AssetsPage() {
                           <div className="space-y-3">
                             <div className="flex items-center justify-between mb-4">
                               <h3 className="text-sm font-medium text-gray-700">
-                                {bankAccounts[selectedMarket].length} {bankAccounts[selectedMarket].length === 1 ? "Bank Account" : "Bank Accounts"}
+                                {getFilteredBankAccounts(selectedMarket).length} {getFilteredBankAccounts(selectedMarket).length === 1 ? "Bank Account" : "Bank Accounts"}
                               </h3>
                               <button
                                 onClick={() => {
@@ -1461,16 +1642,23 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {bankAccounts[selectedMarket].map((account) => (
+                              {getFilteredBankAccounts(selectedMarket).map((account) => (
                                 <div
                                   key={account.id}
                                   className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
                                 >
                                   <div className="flex items-start justify-between mb-3">
                                     <div className="flex-1">
-                                      <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                        {account.bankName}
-                                      </h4>
+                                      <div className="flex items-center gap-2 mb-2">
+                                        <h4 className="text-sm font-semibold text-gray-900">
+                                          {account.bankName}
+                                        </h4>
+                                        {selectedFamilyMemberFilter === "all" && (
+                                          <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                            {getFamilyMemberName(account.familyMemberId)}
+                                          </span>
+                                        )}
+                                      </div>
                                       {account.accountNumber && (
                                         <p className="text-xs text-gray-600 mb-1">
                                           Account: {account.accountNumber}
@@ -1485,6 +1673,7 @@ export default function AssetsPage() {
                                           setBankName(account.bankName);
                                           setAccountNumber(account.accountNumber || "");
                                           setBankBalance(account.balance.toString());
+                                          setSelectedFamilyMemberId(account.familyMemberId);
                                           setIsAddAssetModalOpen(true);
                                         }}
                                         className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -1586,7 +1775,7 @@ export default function AssetsPage() {
 
                     {activeTab === "mutual_funds" && (
                       <div>
-                        {mutualFunds[selectedMarket].length === 0 ? (
+                        {getFilteredMutualFunds(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
                               className="mx-auto h-12 w-12 text-gray-400 mb-4"
@@ -1632,7 +1821,7 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {mutualFunds[selectedMarket].map((fund) => (
+                              {getFilteredMutualFunds(selectedMarket).map((fund) => (
                                 <div
                                   key={fund.id}
                                   className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
@@ -1779,7 +1968,7 @@ export default function AssetsPage() {
 
                     {activeTab === "fixed_deposits" && (
                       <div>
-                        {fixedDeposits[selectedMarket].length === 0 ? (
+                        {getFilteredFixedDeposits(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
                               <span className="text-3xl font-semibold text-gray-600">
@@ -1804,7 +1993,7 @@ export default function AssetsPage() {
                           <div className="space-y-3">
                             <div className="flex items-center justify-between mb-4">
                               <h3 className="text-sm font-medium text-gray-700">
-                                {fixedDeposits[selectedMarket].length} {fixedDeposits[selectedMarket].length === 1 ? "Fixed Deposit" : "Fixed Deposits"}
+                                {getFilteredFixedDeposits(selectedMarket).length} {getFilteredFixedDeposits(selectedMarket).length === 1 ? "Fixed Deposit" : "Fixed Deposits"}
                               </h3>
                               <button
                                 onClick={() => {
@@ -1817,7 +2006,7 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {fixedDeposits[selectedMarket].map((fd) => {
+                              {getFilteredFixedDeposits(selectedMarket).map((fd) => {
                                 const maturityDate = new Date(fd.maturityDate);
                                 const isMatured = maturityDate < new Date();
                                 
@@ -1828,9 +2017,16 @@ export default function AssetsPage() {
                                   >
                                     <div className="flex items-start justify-between mb-3">
                                       <div className="flex-1">
-                                        <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                          {fd.bankName}
-                                        </h4>
+                                        <div className="flex items-center gap-2 mb-2">
+                                          <h4 className="text-sm font-semibold text-gray-900">
+                                            {fd.bankName}
+                                          </h4>
+                                          {selectedFamilyMemberFilter === "all" && (
+                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                              {getFamilyMemberName(fd.familyMemberId)}
+                                            </span>
+                                          )}
+                                        </div>
                                         <div className="flex items-center space-x-4 text-xs text-gray-600">
                                           <span>
                                             Amount: {currentMarket.symbol}
@@ -1860,6 +2056,7 @@ export default function AssetsPage() {
                                             setFdRate(fd.rateOfInterest.toString());
                                             setFdDuration(fd.duration.toString());
                                             setFdStartDate(fd.startDate || new Date().toISOString().split('T')[0]);
+                                            setSelectedFamilyMemberId(fd.familyMemberId);
                                             setIsAddAssetModalOpen(true);
                                           }}
                                           className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -1969,7 +2166,7 @@ export default function AssetsPage() {
 
                     {activeTab === "insurance_policies" && (
                       <div>
-                        {insurancePolicies[selectedMarket].length === 0 ? (
+                        {getFilteredInsurancePolicies(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
                               <span className="text-3xl font-semibold text-gray-600">
@@ -1994,7 +2191,7 @@ export default function AssetsPage() {
                           <div className="space-y-3">
                             <div className="flex items-center justify-between mb-4">
                               <h3 className="text-sm font-medium text-gray-700">
-                                {insurancePolicies[selectedMarket].length} {insurancePolicies[selectedMarket].length === 1 ? "Insurance Policy" : "Insurance Policies"}
+                                {getFilteredInsurancePolicies(selectedMarket).length} {getFilteredInsurancePolicies(selectedMarket).length === 1 ? "Insurance Policy" : "Insurance Policies"}
                               </h3>
                               <button
                                 onClick={() => {
@@ -2007,7 +2204,7 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {insurancePolicies[selectedMarket].map((policy) => {
+                              {getFilteredInsurancePolicies(selectedMarket).map((policy) => {
                                 const maturityDate = policy.dateOfMaturity ? new Date(policy.dateOfMaturity) : null;
                                 const isMatured = maturityDate && maturityDate < new Date();
                                 
@@ -2018,9 +2215,16 @@ export default function AssetsPage() {
                                   >
                                     <div className="flex items-start justify-between mb-3">
                                       <div className="flex-1">
-                                        <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                          {policy.insuranceName}
-                                        </h4>
+                                        <div className="flex items-center gap-2 mb-2">
+                                          <h4 className="text-sm font-semibold text-gray-900">
+                                            {policy.insuranceName}
+                                          </h4>
+                                          {selectedFamilyMemberFilter === "all" && (
+                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                              {getFamilyMemberName(policy.familyMemberId)}
+                                            </span>
+                                          )}
+                                        </div>
                                         <div className="flex items-center space-x-4 text-xs text-gray-600">
                                           <span>Policy #: {policy.policyNumber}</span>
                                           {policy.nominee && <span>Nominee: {policy.nominee}</span>}
@@ -2164,7 +2368,7 @@ export default function AssetsPage() {
 
                     {activeTab === "commodities" && (
                       <div>
-                        {commodities[selectedMarket].length === 0 ? (
+                        {getFilteredCommodities(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
                               <span className="text-3xl font-semibold text-gray-600">
@@ -2189,7 +2393,7 @@ export default function AssetsPage() {
                           <div className="space-y-3">
                             <div className="flex items-center justify-between mb-4">
                               <h3 className="text-sm font-medium text-gray-700">
-                                {commodities[selectedMarket].length} {commodities[selectedMarket].length === 1 ? "Commodity" : "Commodities"}
+                                {getFilteredCommodities(selectedMarket).length} {getFilteredCommodities(selectedMarket).length === 1 ? "Commodity" : "Commodities"}
                               </h3>
                               <button
                                 onClick={() => {
@@ -2202,7 +2406,7 @@ export default function AssetsPage() {
                               </button>
                             </div>
                             <div className="space-y-2">
-                              {commodities[selectedMarket].map((commodity) => {
+                              {getFilteredCommodities(selectedMarket).map((commodity) => {
                                 return (
                                   <div
                                     key={commodity.id}
@@ -2210,9 +2414,16 @@ export default function AssetsPage() {
                                   >
                                     <div className="flex items-start justify-between">
                                       <div className="flex-1">
-                                        <h4 className="text-base font-semibold text-gray-900 mb-1">
-                                          {commodity.commodityName}
-                                        </h4>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <h4 className="text-base font-semibold text-gray-900">
+                                            {commodity.commodityName}
+                                          </h4>
+                                          {selectedFamilyMemberFilter === "all" && (
+                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                              {getFamilyMemberName(commodity.familyMemberId)}
+                                            </span>
+                                          )}
+                                        </div>
                                         <div className="space-y-1 text-sm text-gray-600">
                                           <p>
                                             <span className="font-medium">Form:</span> {commodity.form}
@@ -2246,6 +2457,7 @@ export default function AssetsPage() {
                                             setCommodityUnits(commodity.units);
                                             setCommodityPurchaseDate(commodity.purchaseDate);
                                             setCommodityPurchasePrice(commodity.purchasePrice.toString());
+                                            setSelectedFamilyMemberId(commodity.familyMemberId);
                                             setIsAddAssetModalOpen(true);
                                           }}
                                           className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -2415,6 +2627,7 @@ export default function AssetsPage() {
                             bankName: bankName,
                             accountNumber: accountNumber || undefined,
                             balance: balance,
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)
@@ -2454,6 +2667,7 @@ export default function AssetsPage() {
                         bankName: bankName,
                         accountNumber: accountNumber || undefined,
                         balance: balance,
+                        familyMemberId: selectedFamilyMemberId,
                       };
                       
                       // Save to database
@@ -2513,6 +2727,7 @@ export default function AssetsPage() {
                             totalInvested: totalInvested,
                             actualWorth: currentWorth, // Use manually entered current value
                             purchaseDate: stockPurchaseDate, // Include purchase date
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)
@@ -2589,6 +2804,7 @@ export default function AssetsPage() {
                             totalInvested: totalInvested,
                             actualWorth: totalInvested, // Will be updated by price update service
                             purchaseDate: stockPurchaseDate, // Include purchase date
+                            familyMemberId: selectedFamilyMemberId,
                           };
                         
                         updatedStocks = [...marketStocks, newStock];
@@ -2654,6 +2870,7 @@ export default function AssetsPage() {
                             totalInvested: totalInvested,
                             currentWorth: currentWorth, // Use manually entered current value
                             purchaseDate: mutualFundPurchaseDate, // Include purchase date
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)
@@ -2696,10 +2913,11 @@ export default function AssetsPage() {
                         totalInvested: totalInvested,
                         currentWorth: totalInvested, // For now, same as invested
                         purchaseDate: mutualFundPurchaseDate, // Include purchase date
+                        familyMemberId: selectedFamilyMemberId,
                       };
                       
                       // Save to database
-                      const dbId = await saveMutualFundToDatabase({ ...newMutualFund, purchaseDate: mutualFundPurchaseDate } as any, selectedMarket);
+                      const dbId = await saveMutualFundToDatabase({ ...newMutualFund, purchaseDate: mutualFundPurchaseDate, familyMemberId: selectedFamilyMemberId } as any, selectedMarket);
                       if (dbId && typeof dbId === 'string') {
                         newMutualFund.dbId = dbId;
                         newMutualFund.id = dbId; // Use database ID as the main ID
@@ -2803,6 +3021,7 @@ export default function AssetsPage() {
                         maturityAmount: maturityAmount,
                         startDate: startDate.toISOString().split('T')[0],
                         maturityDate: maturityDate.toISOString().split('T')[0],
+                        familyMemberId: selectedFamilyMemberId,
                       };
                       
                       // Save to database
@@ -2864,7 +3083,7 @@ export default function AssetsPage() {
                           };
                           
                           // Save to database (async, but don't wait)
-                          saveInsurancePolicyToDatabase(updatedPolicies[policyIndex], selectedMarket).catch(console.error);
+                          saveInsurancePolicyToDatabase({ ...updatedPolicies[policyIndex], familyMemberId: selectedFamilyMemberId } as any, selectedMarket).catch(console.error);
                           
                           // Calculate new net worth with updated policies
                           const updatedStocks = stocks[selectedMarket];
@@ -2907,11 +3126,12 @@ export default function AssetsPage() {
                         premium: premiumValue,
                         nominee: nominee || undefined,
                         premiumPaymentDate: premiumPaymentDate || undefined,
+                        familyMemberId: selectedFamilyMemberId,
                       };
                       
                       // Save to database
                       try {
-                        const dbId = await saveInsurancePolicyToDatabase(newInsurancePolicy, selectedMarket);
+                        const dbId = await saveInsurancePolicyToDatabase({ ...newInsurancePolicy, familyMemberId: selectedFamilyMemberId } as any, selectedMarket);
                         if (dbId && typeof dbId === 'string') {
                           newInsurancePolicy.dbId = dbId;
                           newInsurancePolicy.id = dbId; // Use database ID as the main ID
@@ -2973,6 +3193,7 @@ export default function AssetsPage() {
                             purchaseDate: commodityPurchaseDate,
                             purchasePrice: purchasePriceValue,
                             currentValue: currentValue,
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)
@@ -3016,11 +3237,12 @@ export default function AssetsPage() {
                         purchaseDate: commodityPurchaseDate,
                         purchasePrice: purchasePriceValue,
                         currentValue: currentValue,
+                        familyMemberId: selectedFamilyMemberId,
                       };
                       
                       // Save to database
                       try {
-                        const dbId = await saveCommodityToDatabase(newCommodity, selectedMarket);
+                        const dbId = await saveCommodityToDatabase({ ...newCommodity, familyMemberId: selectedFamilyMemberId } as any, selectedMarket);
                         if (dbId && typeof dbId === 'string') {
                           newCommodity.dbId = dbId;
                           newCommodity.id = dbId; // Use database ID as the main ID
@@ -3100,6 +3322,7 @@ export default function AssetsPage() {
                   setCommodityUnits("grams");
                   setCommodityPurchaseDate(new Date().toISOString().split('T')[0]);
                   setCommodityPurchasePrice("");
+                  setSelectedFamilyMemberId(undefined);
                   setIsAddAssetModalOpen(false);
                 }}
                 className="space-y-4"
@@ -3819,8 +4042,31 @@ export default function AssetsPage() {
                   </div>
                 )}
 
+                {/* Family Member Assignment (for all asset types) */}
+                <div className="pt-4 border-t border-gray-200">
+                  <label
+                    htmlFor="asset-family-member"
+                    className="block text-sm font-medium text-gray-700 mb-2"
+                  >
+                    Assign to Family Member <span className="text-gray-400 text-xs">(Optional)</span>
+                  </label>
+                  <select
+                    id="asset-family-member"
+                    value={selectedFamilyMemberId || ""}
+                    onChange={(e) => setSelectedFamilyMemberId(e.target.value || undefined)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
+                  >
+                    <option value="">Self</option>
+                    {familyMembers.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name} ({member.relationship})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 {/* Form Actions */}
-                <div className="flex items-center justify-end space-x-3 pt-4">
+                <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
                   <button
                     type="button"
                     onClick={() => {
@@ -3855,6 +4101,7 @@ export default function AssetsPage() {
                       setEditingMutualFundId(null);
                       setEditingFixedDepositId(null);
                       setEditingInsurancePolicyId(null);
+                      setSelectedFamilyMemberId(undefined);
                     }}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
                   >

@@ -447,6 +447,12 @@ export default function ExpensesPage() {
               Financial Assets
             </button>
             <button
+              onClick={() => (window.location.href = "/profile")}
+              className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900"
+            >
+              Profile
+            </button>
+            <button
               onClick={() => {
                 localStorage.removeItem("access_token");
                 localStorage.removeItem("refresh_token");
