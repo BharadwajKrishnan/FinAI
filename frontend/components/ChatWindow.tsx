@@ -19,8 +19,11 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<{ type: 'uploading' | 'success' | 'error' | null; message: string }>({ type: null, message: '' });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messageIdCounterRef = useRef(0); // Counter for unique message IDs
   const usedIdsRef = useRef<Set<string>>(new Set()); // Track used IDs to prevent duplicates
 
@@ -109,7 +112,21 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    // Allow submit if there's text OR a file selected
+    if ((!input.trim() && !selectedFile) || isLoading) return;
+
+    // Get access token from localStorage
+    const accessToken = localStorage.getItem("access_token");
+    if (!accessToken) {
+      alert("Not authenticated. Please log in again.");
+      return;
+    }
+
+    // Prepare conversation history for context
+    const conversationHistory = messages.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
 
     // Generate unique message ID - ensure it's never duplicated
     let messageId: string;
@@ -118,62 +135,126 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
     } while (usedIdsRef.current.has(messageId));
     usedIdsRef.current.add(messageId);
     
+    // Create user message content
+    const userMessageContent = input.trim() || (selectedFile ? `Uploaded ${selectedFile.name}` : "");
+    
     const userMessage: Message = {
       id: messageId,
       role: "user",
-      content: input.trim(),
+      content: userMessageContent,
       timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const currentInput = input.trim();
+    const currentFile = selectedFile;
     setInput("");
+    setSelectedFile(null);
     setIsLoading(true);
+    setUploadStatus({ type: 'uploading', message: currentFile ? `Uploading ${currentFile.name}...` : 'Processing...' });
 
     // Auto-resize textarea
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
 
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+
     try {
-      // Get access token from localStorage
-      const accessToken = localStorage.getItem("access_token");
-      if (!accessToken) {
-        throw new Error("Not authenticated. Please log in again.");
-      }
+      let response: Response;
+      let data: any;
 
-      // Prepare conversation history for context
-      const conversationHistory = messages.map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      }));
-
-      // Call backend LLM API via Next.js API route (avoids CORS issues)
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          message: userMessage.content,
-          conversation_history: conversationHistory,
-          context: context, // Pass context to backend
-        }),
-      }).catch((fetchError) => {
-        // Handle network errors
-        console.error("Fetch error:", fetchError);
-        if (fetchError.message?.includes("fetch failed") || fetchError.message?.includes("Failed to fetch")) {
-          throw new Error(`Cannot connect to backend server. Please ensure both frontend and backend are running.`);
+      // If there's a file, use the upload endpoint
+      if (currentFile) {
+        const formData = new FormData();
+        formData.append('file', currentFile);
+        formData.append('context', context);
+        formData.append('conversation_history', JSON.stringify(conversationHistory));
+        
+        // If there's also text, prepend it to the conversation
+        if (currentInput) {
+          // Add the text as a user message in the conversation history
+          const updatedHistory = [
+            ...conversationHistory,
+            { role: "user", content: currentInput }
+          ];
+          formData.set('conversation_history', JSON.stringify(updatedHistory));
         }
-        throw fetchError;
-      });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || errorData.message || "Failed to get response");
+        setUploadStatus({ type: 'uploading', message: `Parsing ${currentFile.name}...` });
+        response = await fetch("/api/chat/upload", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: formData,
+        }).catch((fetchError) => {
+          console.error("Fetch error:", fetchError);
+          if (fetchError.message?.includes("fetch failed") || fetchError.message?.includes("Failed to fetch")) {
+            throw new Error(`Cannot connect to backend server. Please ensure both frontend and backend are running.`);
+          }
+          throw fetchError;
+        });
+
+        if (!response.ok) {
+          let errorMessage = "Failed to upload file";
+          try {
+            const errorData = await response.json();
+            errorMessage = errorData.detail || errorData.message || errorMessage;
+          } catch (e) {
+            try {
+              const errorText = await response.text();
+              if (errorText) {
+                errorMessage = errorText;
+              }
+            } catch (e2) {
+              // Use default error message
+            }
+          }
+          throw new Error(errorMessage);
+        }
+
+        data = await response.json();
+        
+        // Show success status
+        const fileExtension = currentFile.name.split('.').pop()?.toLowerCase();
+        const fileType = fileExtension === 'csv' ? 'CSV' : 'PDF';
+        setUploadStatus({ 
+          type: 'success', 
+          message: `✅ Successfully uploaded and parsed ${currentFile.name}. ${fileType} data extracted and sent to AI for processing.` 
+        });
+        setTimeout(() => setUploadStatus({ type: null, message: '' }), 5000);
+      } else {
+        // No file, use regular chat endpoint
+        response = await fetch("/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            message: currentInput,
+            conversation_history: conversationHistory,
+            context: context,
+          }),
+        }).catch((fetchError) => {
+          console.error("Fetch error:", fetchError);
+          if (fetchError.message?.includes("fetch failed") || fetchError.message?.includes("Failed to fetch")) {
+            throw new Error(`Cannot connect to backend server. Please ensure both frontend and backend are running.`);
+          }
+          throw fetchError;
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || errorData.message || "Failed to get response");
+        }
+
+        data = await response.json();
       }
-
-      const data = await response.json();
 
       // Always generate unique message ID on frontend to avoid duplicates
       let assistantMessageId: string;
@@ -232,6 +313,10 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
         }
       }
       
+      // Show error status
+      setUploadStatus({ type: 'error', message: `Upload failed: ${errorMessage}` });
+      setTimeout(() => setUploadStatus({ type: null, message: '' }), 5000);
+      
       // Generate unique message ID for error message
       let errorMessageId: string;
       do {
@@ -262,6 +347,40 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    console.log("DEBUG: File selected:", file?.name, file?.size);
+    if (file) {
+      // Validate file type
+      const fileExtension = file.name.split('.').pop()?.toLowerCase();
+      if (fileExtension !== 'pdf' && fileExtension !== 'csv') {
+        alert('Please select a PDF or CSV file');
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+      // Validate file size (max 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        alert('File size must be less than 10MB');
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+      console.log("DEBUG: File validated, storing for upload on send");
+      // Just store the file, don't upload yet
+      setSelectedFile(file);
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -355,7 +474,101 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
 
       {/* Input Area */}
       <div className="border-t border-gray-200 p-4 bg-gray-50">
+        {/* Upload Status Notification */}
+        {uploadStatus.type && (
+          <div className={`mb-3 p-3 rounded-lg flex items-center justify-between ${
+            uploadStatus.type === 'uploading' ? 'bg-blue-50 border border-blue-200' :
+            uploadStatus.type === 'success' ? 'bg-green-50 border border-green-200' :
+            'bg-red-50 border border-red-200'
+          }`}>
+            <div className="flex items-center space-x-2">
+              {uploadStatus.type === 'uploading' && (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+              )}
+              {uploadStatus.type === 'success' && (
+                <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+              {uploadStatus.type === 'error' && (
+                <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              )}
+              <span className={`text-sm font-medium ${
+                uploadStatus.type === 'uploading' ? 'text-blue-900' :
+                uploadStatus.type === 'success' ? 'text-green-900' :
+                'text-red-900'
+              }`}>
+                {uploadStatus.message}
+              </span>
+            </div>
+            {uploadStatus.type !== 'uploading' && (
+              <button
+                onClick={() => setUploadStatus({ type: null, message: '' })}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+        )}
+        
+        {/* Selected File Preview */}
+        {selectedFile && (
+          <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+            <div className="flex items-center space-x-2 flex-1 min-w-0">
+              <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span className="text-sm font-medium text-blue-900 truncate">{selectedFile.name}</span>
+              <span className="text-xs text-blue-600">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleRemoveFile}
+              className="ml-2 text-blue-600 hover:text-blue-800 flex-shrink-0"
+              title="Remove file"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
+        
         <form onSubmit={handleSubmit} className="flex items-end space-x-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.csv"
+            onChange={handleFileSelect}
+            className="hidden"
+            disabled={isLoading}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isLoading}
+            className="px-3 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            title="Upload PDF or CSV file"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
+              />
+            </svg>
+          </button>
           <div className="flex-1 relative">
             <textarea
               ref={textareaRef}
@@ -365,7 +578,7 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
                 adjustTextareaHeight();
               }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about your finances..."
+              placeholder={selectedFile ? "Add a message (optional)..." : "Ask about your finances..."}
               rows={1}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none resize-none overflow-hidden"
               style={{ minHeight: "40px", maxHeight: "120px" }}
@@ -374,7 +587,7 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
           </div>
           <button
             type="submit"
-            disabled={!input.trim() || isLoading}
+            disabled={(!input.trim() && !selectedFile) || isLoading}
             className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <svg
@@ -393,7 +606,7 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
           </button>
         </form>
         <p className="text-xs text-gray-500 mt-2">
-          Press Enter to send, Shift+Enter for new line
+          Press Enter to send, Shift+Enter for new line. Click the attachment icon to upload PDF or CSV files. You can add text along with the file.
         </p>
       </div>
     </div>

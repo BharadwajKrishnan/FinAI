@@ -67,11 +67,13 @@ async def get_expenses(
             response = query.execute()
             expenses = response.data if response.data else []
             
-            else:
+            if not expenses:
                 # If no expenses found, try fetching all expenses for this user to debug
                 all_expenses_query = supabase_client.table("expenses").select("*").eq("user_id", user_id).execute()
                 all_expenses = all_expenses_query.data if all_expenses_query.data else []
                 if len(all_expenses) > 0:
+                    # Debug: log that expenses exist but weren't returned by the query
+                    print(f"DEBUG: Found {len(all_expenses)} expenses for user, but query returned 0. This may indicate a filtering issue.")
             
             return expenses
         except Exception as query_error:

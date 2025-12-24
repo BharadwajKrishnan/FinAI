@@ -2,7 +2,7 @@
 Chat/LLM API endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
@@ -11,11 +11,14 @@ import time
 import random
 import uuid
 import asyncio
+import csv
+import io
 from auth import get_current_user, security
 from services.llm_service import llm_service
 from services.asset_llm_service import asset_llm_service
 from database.supabase_client import supabase, supabase_service, get_supabase_client_with_token
 from models import AssetCreate, AssetUpdate
+# File upload helper functions will be defined below
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -91,8 +94,6 @@ async def chat(
                 
                 # Filter by is_active - include assets where is_active is True or NULL (NULL treated as active)
                 assets = [a for a in all_assets if a.get("is_active") is True or a.get("is_active") is None]
-                
-                if len(assets) > 0:
                 
                 # Organize assets by market (currency) and then by type
                 # Also organize by family member for better context
@@ -362,16 +363,26 @@ async def chat(
             expenses_json = json.dumps(expenses_data_with_grouping, indent=2, default=str)
             # If expenses JSON is very large (>50KB), log a warning
             if len(expenses_json) > 50000:
+                print(f"WARNING: Expenses JSON is very large ({len(expenses_json)} bytes). Consider pagination.")
         
         # Get current message order (max message_order + 1 for this user and context)
         try:
             max_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).eq("context", context).order("message_order", desc=True).limit(1).execute()
             if max_order_response.data and len(max_order_response.data) > 0:
-                current_order = max_order_response.data[0].get("message_order", -1) + 1
+                max_order = max_order_response.data[0].get("message_order", -1)
+                # Safety check: if max_order is too large (timestamp-based), reset to 0
+                # PostgreSQL INTEGER max is 2,147,483,647, but timestamps are ~1.7 trillion
+                if max_order and max_order > 1000000000:  # If it's a timestamp (milliseconds), reset
+                    print(f"WARNING: Found timestamp-based message_order ({max_order}), resetting to 0")
+                    current_order = 0
+                else:
+                    current_order = (max_order if max_order is not None else -1) + 1
             else:
                 current_order = 0
         except Exception as e:
             import traceback
+            print(f"Error getting message order: {e}")
+            traceback.print_exc()
             current_order = 0
         
         # Save user message to database
@@ -642,6 +653,8 @@ When analyzing expenses:
                                 for msg in chat_history_response.data
                             ]
                     except Exception as history_error:
+                        print(f"Error fetching chat history: {history_error}")
+                        asset_conversation_history = []
                 
                 # Add family members to portfolio_data for LLM context
                 if portfolio_data and "family_members" not in portfolio_data:
@@ -697,6 +710,7 @@ When analyzing expenses:
                         )
                     else:
                         # Not asking for missing info, continue to normal chat
+                        pass
                 
                 if asset_command_result.get("action") != "none":
                     # This is an asset management command - execute it
@@ -984,6 +998,8 @@ When analyzing expenses:
                                 if hasattr(response, 'data'):
                                     response_data = response.data
                                 elif hasattr(response, '__dict__'):
+                                    # Fallback: try to get data from __dict__
+                                    response_data = response.__dict__.get('data')
                                 
                                 # Also check for errors
                                 response_error = None
@@ -1046,6 +1062,17 @@ When analyzing expenses:
                                     llm_response = f"❌ Failed to create asset: Data validation error. {error_msg}"
                                 else:
                                     llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
+                                error_msg = str(insert_error)
+                                print(f"ERROR inserting asset into database: {error_msg}")
+                                import traceback
+                                
+                                # Check for RLS errors
+                                if "row-level security" in error_msg.lower() or "42501" in error_msg:
+                                    llm_response = "❌ Failed to create asset: Database permission error. Please check your Supabase configuration."
+                                elif "foreign key" in error_msg.lower() or "constraint" in error_msg.lower():
+                                    llm_response = f"❌ Failed to create asset: Data validation error. {error_msg}"
+                                else:
+                                    llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
                         
                         elif action == "delete":
                             # Delete asset
@@ -1065,10 +1092,164 @@ When analyzing expenses:
                                         llm_response = f"❌ Failed to delete asset: {asset_name}"
                         
                         elif action == "update":
-                            # Update asset
-                            if not asset_id:
+                            # Check if user wants to update all stocks/assets
+                            # Check both current message and conversation history
+                            user_message_lower = request.message.lower()
+                            conversation_text = user_message_lower
+                            if request.conversation_history:
+                                for msg in request.conversation_history:
+                                    if msg.get("role") == "user":
+                                        conversation_text += " " + msg.get("content", "").lower()
+                            
+                            # More flexible detection - check for patterns that indicate "all stocks"
+                            update_all_stocks = any(phrase in conversation_text for phrase in [
+                                "all stocks", "all the stocks", "every stock", "all my stocks", 
+                                "update all stocks", "update all the stocks", "change all stocks",
+                                "change all the stocks", "update all stock", "for all stocks",
+                                "for all the stocks", "the stocks", "all stock"
+                            ])
+                            update_all_assets = any(phrase in conversation_text for phrase in [
+                                "all assets", "all the assets", "every asset", "all my assets", 
+                                "update all assets", "update all the assets", "change all assets",
+                                "change all the assets", "for all assets", "for all the assets",
+                                "do for all assets", "do for all the assets", "the assets"
+                            ])
+                            
+                            # Extract purchase_date from user message if not in asset_data
+                            import re
+                            from datetime import datetime
+                            if not asset_data.get("purchase_date"):
+                                # Try to extract date from user message (format: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY)
+                                date_patterns = [
+                                    r'(\d{1,2})/(\d{1,2})/(\d{4})',  # 01/01/2024
+                                    r'(\d{1,2})-(\d{1,2})-(\d{4})',  # 01-01-2024
+                                    r'(\d{1,2})\.(\d{1,2})\.(\d{4})',  # 01.01.2024
+                                ]
+                                for pattern in date_patterns:
+                                    date_match = re.search(pattern, conversation_text)
+                                    if date_match:
+                                        day, month, year = date_match.groups()
+                                        try:
+                                            # Format as YYYY-MM-DD
+                                            asset_data["purchase_date"] = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                                            break
+                                        except:
+                                            pass
+                            
+                            print(f"DEBUG UPDATE: update_all_stocks={update_all_stocks}, update_all_assets={update_all_assets}")
+                            print(f"DEBUG UPDATE: asset_data keys={list(asset_data.keys())}")
+                            print(f"DEBUG UPDATE: purchase_date in asset_data={asset_data.get('purchase_date')}")
+                            print(f"DEBUG UPDATE: conversation_text={conversation_text[:200]}")
+                            
+                            assets_to_update = []
+                            if update_all_stocks or update_all_assets:
+                                # Fetch all relevant assets
+                                query = supabase_service.table("assets").select("*").eq("user_id", user_id).eq("is_active", True)
+                                if update_all_stocks:
+                                    query = query.eq("type", "stock")
+                                assets_response = query.execute()
+                                assets_to_update = assets_response.data if assets_response.data else []
+                                
+                                if not assets_to_update:
+                                    llm_response = f"❌ No {'stocks' if update_all_stocks else 'assets'} found to update."
+                                else:
+                                    # Update each asset
+                                    updated_count = 0
+                                    failed_count = 0
+                                    asset_type = "stock" if update_all_stocks else None
+                                    
+                                    for asset in assets_to_update:
+                                        if not asset_type:
+                                            asset_type = asset.get("type")
+                                        
+                                        try:
+                                            # Build update data (same logic as single update)
+                                            update_data = {}
+                                            if asset_data.get("asset_name"):
+                                                update_data["name"] = asset_data.get("asset_name")
+                                            if asset_data.get("current_value") is not None:
+                                                update_data["current_value"] = str(asset_data.get("current_value"))
+                                            if asset_data.get("currency"):
+                                                update_data["currency"] = asset_data.get("currency")
+                                            if asset_data.get("notes") is not None:
+                                                update_data["notes"] = asset_data.get("notes")
+                                            
+                                            # Handle family member matching if provided
+                                            family_member_id = None
+                                            if asset_data.get("family_member_name") and asset_type in ["stock", "bank_account"]:
+                                                family_member_name_provided = asset_data.get("family_member_name", "").strip().lower()
+                                                if family_member_name_provided in ["self", "me", "myself", ""]:
+                                                    family_member_id = None
+                                                else:
+                                                    try:
+                                                        family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                                                        family_members_list = family_members_response.data if family_members_response.data else []
+                                                        matched_member = None
+                                                        for member in family_members_list:
+                                                            member_name = member.get("name", "").lower()
+                                                            if member_name == family_member_name_provided:
+                                                                matched_member = member
+                                                                break
+                                                        if matched_member:
+                                                            family_member_id = matched_member.get("id")
+                                                    except:
+                                                        family_member_id = None
+                                                if family_member_id is not None:
+                                                    update_data["family_member_id"] = family_member_id
+                                            
+                                            # Add type-specific update fields
+                                            if asset_type == "stock":
+                                                if asset_data.get("quantity") is not None:
+                                                    update_data["quantity"] = str(asset_data.get("quantity"))
+                                                if asset_data.get("purchase_price") is not None:
+                                                    update_data["purchase_price"] = str(asset_data.get("purchase_price"))
+                                                if asset_data.get("current_price") is not None:
+                                                    update_data["current_price"] = str(asset_data.get("current_price"))
+                                                if asset_data.get("purchase_date"):
+                                                    update_data["purchase_date"] = asset_data.get("purchase_date")
+                                            
+                                            # Convert dates
+                                            date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date',
+                                                         'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
+                                            for field in date_fields:
+                                                if field in update_data and update_data[field]:
+                                                    if isinstance(update_data[field], str):
+                                                        pass
+                                                    else:
+                                                        update_data[field] = update_data[field].isoformat() if hasattr(update_data[field], 'isoformat') else update_data[field]
+                                            
+                                            # Convert decimals
+                                            decimal_fields = ['current_value', 'quantity', 'purchase_price', 'current_price',
+                                                             'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+                                                             'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price']
+                                            for field in decimal_fields:
+                                                if field in update_data and update_data[field] is not None:
+                                                    update_data[field] = str(update_data[field])
+                                            
+                                            # Perform update
+                                            if update_data:
+                                                update_response = supabase_service.table("assets").update(update_data).eq("id", asset["id"]).eq("user_id", user_id).execute()
+                                                if update_response.data:
+                                                    updated_count += 1
+                                                else:
+                                                    failed_count += 1
+                                            else:
+                                                failed_count += 1
+                                        except Exception as e:
+                                            print(f"Error updating asset {asset.get('id')}: {e}")
+                                            failed_count += 1
+                                    
+                                    if updated_count > 0:
+                                        llm_response = f"✅ Successfully updated {updated_count} {'stock' if update_all_stocks else 'asset'}{'s' if updated_count > 1 else ''}."
+                                        if failed_count > 0:
+                                            llm_response += f" {failed_count} failed to update."
+                                    else:
+                                        llm_response = f"❌ Failed to update any {'stocks' if update_all_stocks else 'assets'}."
+                            
+                            elif not asset_id:
                                 llm_response = "❌ Could not find the asset to update. Please specify the asset name or ID more clearly."
                             else:
+                                # Single asset update (existing logic)
                                 # Verify asset belongs to user
                                 asset_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
                                 if not asset_response.data:
@@ -1230,8 +1411,8 @@ When analyzing expenses:
                             message_id=message_id
                         )
                 else:
-                
-                # If action is "none", continue with normal LLM chat flow
+                    # If action is "none", continue with normal LLM chat flow
+                    pass
                 
             except Exception as asset_llm_error:
                 # If asset LLM service fails, continue with normal chat flow
@@ -1417,3 +1598,700 @@ async def clear_chat_history(
         error_details = traceback.format_exc()
         raise HTTPException(status_code=500, detail=f"Failed to clear chat history: {str(e)}")
 
+
+async def create_asset_from_llm_data(
+    asset_data: Dict[str, Any],
+    user_id: str,
+    context: str = "assets"
+) -> str:
+    """
+    Helper function to create an asset from LLM-extracted data.
+    Returns the response message.
+    This function is reused by both the chat endpoint and the upload endpoint.
+    """
+    try:
+        # Get currency from market (market should already be converted to currency in asset_llm_service)
+        currency = asset_data.get("currency")
+        asset_type = asset_data.get("asset_type")
+        
+        # Validate required fields are present
+        missing_fields = []
+        
+        if not currency:
+            # Check if market was provided instead
+            market = asset_data.get("market")
+            if market:
+                market_lower = market.lower()
+                if market_lower == 'india':
+                    currency = 'INR'
+                elif market_lower == 'europe':
+                    currency = 'EUR'
+                else:
+                    missing_fields.append("market (must be 'India' or 'Europe')")
+            else:
+                missing_fields.append("market (India or Europe)")
+        
+        if asset_type == "stock":
+            if not asset_data.get("asset_name"):
+                missing_fields.append("asset name")
+            if not asset_data.get("stock_symbol"):
+                missing_fields.append("stock symbol")
+            if not asset_data.get("quantity"):
+                missing_fields.append("quantity (number of shares)")
+            if not asset_data.get("purchase_price"):
+                missing_fields.append("purchase price")
+            if not asset_data.get("purchase_date"):
+                missing_fields.append("purchase date")
+            if not asset_data.get("family_member_name"):
+                missing_fields.append("stock owner (family member name or 'self')")
+        elif asset_type == "bank_account":
+            if not asset_data.get("bank_name"):
+                missing_fields.append("bank name")
+            if not asset_data.get("account_number"):
+                missing_fields.append("account number")
+            if not asset_data.get("account_type"):
+                missing_fields.append("account type (savings, checking, or current)")
+            if not asset_data.get("current_value"):
+                missing_fields.append("current balance (bank balance)")
+            if not asset_data.get("family_member_name"):
+                missing_fields.append("account owner (family member name or 'self')")
+        
+        if missing_fields:
+            error_msg = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_fields)}."
+            return f"❌ {error_msg}"
+        
+        # Handle family member matching
+        family_member_id = None
+        family_member_name_provided = asset_data.get("family_member_name", "").strip().lower()
+        family_member_not_found_message = ""
+        
+        if asset_type in ["stock", "bank_account"]:
+            if family_member_name_provided:
+                if family_member_name_provided in ["self", "me", "myself", ""]:
+                    family_member_id = None
+                else:
+                    try:
+                        family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                        family_members_list = family_members_response.data if family_members_response.data else []
+                        
+                        matched_member = None
+                        # Exact match first
+                        for member in family_members_list:
+                            member_name = member.get("name", "").lower()
+                            if member_name == family_member_name_provided:
+                                matched_member = member
+                                break
+                        
+                        # Partial match if no exact match
+                        if not matched_member:
+                            for member in family_members_list:
+                                member_name = member.get("name", "").lower()
+                                member_name_parts = member_name.split()
+                                if len(member_name_parts) > 1 and family_member_name_provided == member_name_parts[-1]:
+                                    matched_member = member
+                                    break
+                                elif family_member_name_provided in member_name and len(family_member_name_provided) >= 4:
+                                    matched_member = member
+                                    break
+                        
+                        if matched_member:
+                            family_member_id = matched_member.get("id")
+                        else:
+                            family_member_id = None
+                            asset_type_name = "stock" if asset_type == "stock" else "bank account"
+                            family_member_not_found_message = f" Note: The family member '{asset_data.get('family_member_name')}' is not yet added in your Profile. The {asset_type_name} has been assigned to you (Self)."
+                    except Exception as e:
+                        family_member_id = None
+            else:
+                family_member_id = None
+        
+        # For bank accounts, if asset_name is not provided, use bank_name as asset_name
+        asset_name = asset_data.get("asset_name")
+        if asset_type == "bank_account" and not asset_name and asset_data.get("bank_name"):
+            asset_name = asset_data.get("bank_name")
+        
+        asset_create_data = {
+            "name": asset_name or "New Asset",
+            "type": asset_type,
+            "currency": currency,
+            "current_value": asset_data.get("current_value", 0),
+            "notes": asset_data.get("notes"),
+            "family_member_id": family_member_id,
+        }
+        
+        # Add type-specific fields
+        if asset_type == "stock":
+            asset_create_data.update({
+                "stock_symbol": asset_data.get("stock_symbol"),
+                "stock_exchange": asset_data.get("stock_exchange"),
+                "quantity": asset_data.get("quantity"),
+                "purchase_price": asset_data.get("purchase_price"),
+                "purchase_date": asset_data.get("purchase_date"),
+                "current_price": asset_data.get("current_price"),
+            })
+            if not asset_create_data.get("current_value") and asset_data.get("quantity") and asset_data.get("purchase_price"):
+                asset_create_data["current_value"] = float(asset_data.get("quantity", 0)) * float(asset_data.get("purchase_price", 0))
+        elif asset_type == "bank_account":
+            asset_create_data.update({
+                "bank_name": asset_data.get("bank_name"),
+                "account_type": asset_data.get("account_type"),
+                "account_number": asset_data.get("account_number"),
+                "interest_rate": asset_data.get("interest_rate"),
+            })
+            if asset_data.get("current_value"):
+                asset_create_data["current_value"] = asset_data.get("current_value")
+        
+        # Create AssetCreate object
+        asset_create_data = {k: v for k, v in asset_create_data.items() if v is not None or k == "notes"}
+        asset_create = AssetCreate(**asset_create_data)
+        asset_create.model_validate_asset_fields()
+        
+        # Convert to dict for database insertion
+        try:
+            asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+        except AttributeError:
+            asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+        
+        asset_dict["user_id"] = user_id
+        asset_dict["is_active"] = True
+        
+        # Convert dates and decimals
+        date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
+                     'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
+        for field in date_fields:
+            if field in asset_dict and asset_dict[field]:
+                if not isinstance(asset_dict[field], str):
+                    asset_dict[field] = asset_dict[field].isoformat() if hasattr(asset_dict[field], 'isoformat') else asset_dict[field]
+        
+        decimal_fields = ['current_value', 'quantity', 'purchase_price', 'current_price',
+                         'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+                         'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price']
+        for field in decimal_fields:
+            if field in asset_dict and asset_dict[field] is not None:
+                asset_dict[field] = str(asset_dict[field])
+        
+        # Insert into database
+        response = supabase_service.table("assets").insert(asset_dict).execute()
+        
+        response_data = response.data if hasattr(response, 'data') else None
+        response_error = response.error if hasattr(response, 'error') else None
+        
+        if response_error:
+            return f"❌ Failed to create asset: {response_error}"
+        elif response_data and isinstance(response_data, list) and len(response_data) > 0:
+            created_asset = response_data[0]
+            asset_id = created_asset.get('id')
+            
+            # Verify creation
+            verify_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
+            if verify_response.data and len(verify_response.data) > 0:
+                owner_info = ""
+                if family_member_id:
+                    try:
+                        fm_response = supabase_service.table("family_members").select("name").eq("id", family_member_id).execute()
+                        if fm_response.data:
+                            owner_info = f" for {fm_response.data[0].get('name')}"
+                    except:
+                        pass
+                else:
+                    owner_info = " for you (Self)"
+                
+                if asset_type == "stock":
+                    return f"✅ Successfully added {asset_name} stock{owner_info} to your portfolio.{family_member_not_found_message}"
+                elif asset_type == "bank_account":
+                    return f"✅ Successfully added {asset_name} bank account{owner_info} to your portfolio.{family_member_not_found_message}"
+                else:
+                    return f"✅ Successfully added {asset_type} asset: {asset_name} to your portfolio.{family_member_not_found_message}"
+            else:
+                return "❌ Asset was inserted but could not be verified"
+        else:
+            return "❌ Failed to create asset: No data returned from database"
+            
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"ERROR in create_asset_from_llm_data: {error_details}")
+        return f"❌ Failed to create asset: {str(e)}"
+
+
+def parse_csv_file(file_content: bytes) -> Optional[Dict[str, Any]]:
+    """Parse CSV file and extract asset information"""
+    try:
+        # Decode bytes to string
+        content = file_content.decode('utf-8')
+        print(f"DEBUG: CSV file content length: {len(content)}")
+        print(f"DEBUG: First 200 chars of CSV content:\n{content[:200]}")
+        
+        csv_reader = csv.DictReader(io.StringIO(content))
+        
+        # Extract rows
+        rows = list(csv_reader)
+        print(f"DEBUG: Parsed {len(rows)} rows from CSV")
+        
+        if not rows:
+            print("DEBUG: No rows found in CSV file")
+            return None
+        
+        # Get columns
+        columns = list(rows[0].keys()) if rows else []
+        print(f"DEBUG: CSV columns found: {columns}")
+        print(f"DEBUG: Sample row data: {rows[0] if rows else 'No rows'}")
+        
+        # Return structured data
+        result = {
+            "type": "csv",
+            "rows": rows,
+            "columns": columns
+        }
+        print(f"DEBUG: Returning CSV data with {len(rows)} rows and {len(columns)} columns")
+        return result
+    except Exception as e:
+        import traceback
+        print(f"ERROR parsing CSV: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return None
+
+
+def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
+    """Parse PDF file and extract text"""
+    try:
+        # Try pdfplumber first (better text extraction)
+        try:
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+                if text.strip():
+                    return {
+                        "type": "pdf",
+                        "text": text
+                    }
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"Error with pdfplumber: {e}")
+        
+        # Fallback to PyPDF2
+        try:
+            import PyPDF2
+            pdf_file = io.BytesIO(file_content)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            
+            if text.strip():
+                return {
+                    "type": "pdf",
+                    "text": text
+                }
+        except ImportError:
+            # Neither library is installed
+            raise HTTPException(
+                status_code=500, 
+                detail="PDF parsing library not installed. Please install PyPDF2 or pdfplumber by running: pip install PyPDF2 pdfplumber"
+            )
+        except Exception as e:
+            print(f"Error with PyPDF2: {e}")
+        
+        # If we get here, no text was extracted
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract text from PDF file. The file may be corrupted, password-protected, or contain only images."
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error parsing PDF: {e}")
+        return None
+
+
+def format_extracted_data(extracted_data: Dict[str, Any]) -> str:
+    """Format extracted data into a message for LLM processing"""
+    if extracted_data["type"] == "csv":
+        # Format CSV data
+        rows = extracted_data.get("rows", [])
+        if not rows:
+            return "I have uploaded a CSV file but it appears to be empty."
+        
+        # Get column names
+        columns = extracted_data.get("columns", [])
+        
+        # Create a comprehensive message with ALL CSV data
+        formatted = "I have uploaded a CSV file containing stock/asset information. The file contains ALL the data below. Please extract asset information from EVERY row and add ALL assets to my portfolio.\n\n"
+        
+        # Show column headers
+        if columns:
+            formatted += f"CSV Columns ({len(columns)} columns): {', '.join(columns)}\n"
+            formatted += f"Total Rows: {len(rows)}\n\n"
+            formatted += "=" * 80 + "\n"
+            formatted += "COMPLETE CSV DATA (ALL ROWS):\n"
+            formatted += "=" * 80 + "\n\n"
+        
+        # Include ALL rows in a clear format
+        for i, row in enumerate(rows, 1):
+            formatted += f"--- Row {i} of {len(rows)} ---\n"
+            for key, value in row.items():
+                # Handle None values and empty strings
+                if value is None:
+                    display_value = ""
+                elif value == "":
+                    display_value = "(empty)"
+                else:
+                    display_value = str(value).strip()
+                formatted += f"  {key}: {display_value}\n"
+            formatted += "\n"
+        
+        formatted += "=" * 80 + "\n"
+        formatted += "\nCOLUMN MAPPINGS (for CSV files):\n"
+        formatted += "- SYMBOL or STOCK SYMBOL → stock_symbol\n"
+        formatted += "- QTY or QUANTITY → quantity (number of shares)\n"
+        formatted += "- AVG PRICE or AVERAGE PRICE or PURCHASE PRICE → purchase_price\n"
+        formatted += "- LTP or CURRENT PRICE or LATEST PRICE → current_price (optional)\n"
+        formatted += "- CUR. VALUE or CURRENT VALUE → current_value (optional, can be calculated)\n"
+        formatted += "- PURCHASE DATE or BUY DATE or DATE → purchase_date (format: YYYY-MM-DD)\n"
+        formatted += "- If purchase_date is missing, use today's date (YYYY-MM-DD format)\n"
+        formatted += "- Market should be determined from the stock symbol/name (Indian stocks → India/INR, others → Europe/EUR)\n"
+        formatted += "- Stock owner defaults to 'self' if not specified\n"
+        formatted += "\nIMPORTANT INSTRUCTIONS:\n"
+        formatted += "1. Process EVERY row in the CSV file above\n"
+        formatted += "2. Extract asset information from each row using the column mappings above\n"
+        formatted += "3. For stocks: use AVG PRICE as purchase_price, QTY as quantity, SYMBOL as stock_symbol\n"
+        formatted += "4. IMPORTANT: Add assets with whatever information is available. Use defaults for missing optional fields:\n"
+        formatted += "   - If purchase_date is missing, use today's date (YYYY-MM-DD format)\n"
+        formatted += "   - If family_member_name is missing, use 'self'\n"
+        formatted += "   - If asset_name is missing, use the stock_symbol as the asset_name\n"
+        formatted += "5. Add ALL assets to my portfolio immediately with available data\n"
+        formatted += "6. Only ask for information if CRITICAL fields are missing (stock_symbol, quantity, purchase_price)\n"
+        formatted += "7. Do not skip any rows - process all of them\n"
+        formatted += "\nPlease extract and add all assets from the CSV data above to my portfolio. Add them with available information and use defaults for missing optional fields."
+        
+        return formatted
+    
+    elif extracted_data["type"] == "pdf":
+        # Format PDF text
+        text = extracted_data.get("text", "")
+        if not text.strip():
+            return "I have uploaded a PDF file but could not extract any text from it."
+        
+        # Limit text length to avoid token limits
+        if len(text) > 8000:
+            text = text[:8000] + "... (truncated)"
+        
+        formatted = f"I have uploaded a PDF file with the following content:\n\n{text}\n\nPlease extract asset information from this content and add it to my portfolio."
+        return formatted
+    
+    return "I have uploaded a file. Please extract asset information from it."
+
+
+@router.post("/upload", response_model=ChatResponse)
+async def upload_file(
+    file: UploadFile = File(...),
+    context: str = Form("assets"),
+    conversation_history: Optional[str] = Form(None),
+    current_user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Handle file uploads (PDF or CSV) and extract asset information
+    """
+    print(f"DEBUG UPLOAD: File upload endpoint called")
+    print(f"DEBUG UPLOAD: File name: {file.filename}")
+    print(f"DEBUG UPLOAD: Context: {context}")
+    try:
+        # Extract user_id safely
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Invalid user ID format")
+        
+        # Validate file type
+        file_extension = file.filename.split('.')[-1].lower() if file.filename else ''
+        if file_extension not in ['pdf', 'csv']:
+            raise HTTPException(status_code=400, detail="Only PDF and CSV files are supported")
+        
+        # Read file content
+        print(f"DEBUG UPLOAD: About to read file content")
+        file_content = await file.read()
+        print(f"DEBUG UPLOAD: File content read. Size: {len(file_content)} bytes")
+        
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        
+        # Parse file based on type
+        extracted_data = None
+        if file_extension == 'csv':
+            print(f"DEBUG UPLOAD: Parsing CSV file...")
+            extracted_data = parse_csv_file(file_content)
+            print(f"DEBUG UPLOAD: CSV file parsed. Rows: {len(extracted_data.get('rows', [])) if extracted_data else 0}")
+            if extracted_data:
+                print(f"DEBUG UPLOAD: CSV columns: {extracted_data.get('columns', [])}")
+                print(f"DEBUG UPLOAD: First row sample: {extracted_data.get('rows', [])[0] if extracted_data.get('rows') else 'No rows'}")
+            else:
+                print(f"DEBUG UPLOAD: CSV parsing returned None - file might be empty or invalid")
+        elif file_extension == 'pdf':
+            print(f"DEBUG UPLOAD: Parsing PDF file...")
+            extracted_data = parse_pdf_file(file_content)
+            print(f"DEBUG UPLOAD: PDF file parsed. Text length: {len(extracted_data.get('text', '')) if extracted_data else 0}")
+        
+        if not extracted_data:
+            if file_extension == 'pdf':
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Could not extract data from PDF file. Please ensure the PDF contains readable text and is not password-protected."
+                )
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Could not extract data from CSV file. Please ensure the file is a valid CSV format."
+                )
+        
+        # Parse conversation history if provided
+        parsed_history = []
+        if conversation_history:
+            try:
+                parsed_history = json.loads(conversation_history)
+            except:
+                parsed_history = []
+        
+        # Format extracted data into a message
+        print(f"DEBUG UPLOAD: About to format extracted data")
+        extracted_text = format_extracted_data(extracted_data)
+        print(f"DEBUG UPLOAD: Formatted extracted text length: {len(extracted_text)}")
+        print(f"DEBUG UPLOAD: First 1000 chars of extracted text:\n{extracted_text[:1000]}")
+        if len(extracted_text) > 1000:
+            print(f"DEBUG UPLOAD: ... (truncated, total length: {len(extracted_text)})")
+        
+        # Get portfolio data (reuse logic from chat endpoint)
+        portfolio_data = {}
+        if context == "assets":
+            try:
+                # Fetch assets
+                assets_response = supabase_service.table("assets").select("*").eq("user_id", user_id).eq("is_active", True).execute()
+                assets = assets_response.data if assets_response.data else []
+                
+                # Fetch family members
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members_list = family_members_response.data if family_members_response.data else []
+                
+                # Build portfolio data structure (simplified version)
+                portfolio_data = {
+                    "india": {"stocks": [], "bank_accounts": [], "mutual_funds": [], "fixed_deposits": [], "insurance_policies": [], "commodities": []},
+                    "europe": {"stocks": [], "bank_accounts": [], "mutual_funds": [], "fixed_deposits": [], "insurance_policies": [], "commodities": []},
+                    "family_members": [
+                        {"id": str(fm.get("id")), "name": fm.get("name"), "relationship": fm.get("relationship")}
+                        for fm in family_members_list
+                    ]
+                }
+                
+                # Organize assets by market
+                for asset in assets:
+                    currency = asset.get("currency", "USD")
+                    market = "india" if currency == "INR" else "europe" if currency == "EUR" else None
+                    if not market:
+                        continue
+                    
+                    asset_type = asset.get("type")
+                    if asset_type == "stock":
+                        portfolio_data[market]["stocks"].append(asset)
+                    elif asset_type == "bank_account":
+                        portfolio_data[market]["bank_accounts"].append(asset)
+                    elif asset_type == "mutual_fund":
+                        portfolio_data[market]["mutual_funds"].append(asset)
+                    elif asset_type == "fixed_deposit":
+                        portfolio_data[market]["fixed_deposits"].append(asset)
+                    elif asset_type == "insurance_policy":
+                        portfolio_data[market]["insurance_policies"].append(asset)
+                    elif asset_type == "commodity":
+                        portfolio_data[market]["commodities"].append(asset)
+            except Exception as e:
+                print(f"Error fetching portfolio data: {e}")
+                portfolio_data = {}
+        
+        # Process with asset LLM service
+        print(f"DEBUG: About to call asset_llm_service.process_asset_command")
+        print(f"DEBUG: user_message (extracted_text) length: {len(extracted_text)}")
+        print(f"DEBUG: First 1000 chars of user_message:\n{extracted_text[:1000]}")
+        print(f"DEBUG: conversation_history length: {len(parsed_history)}")
+        
+        asset_result = await asset_llm_service.process_asset_command(
+            user_message=extracted_text,
+            user_id=user_id,
+            portfolio_data=portfolio_data,
+            conversation_history=parsed_history
+        )
+        
+        print(f"DEBUG: asset_result action: {asset_result.get('action')}")
+        print(f"DEBUG: asset_result asset_data keys: {list(asset_result.get('asset_data', {}).keys())}")
+        print(f"DEBUG: asset_result response: {asset_result.get('response', '')[:200]}")
+        
+        # Handle the result
+        action = asset_result.get("action", "none")
+        asset_data = asset_result.get("asset_data", {})
+        
+        llm_response = ""
+        
+        # Get current message order (max message_order + 1 for this user and context)
+        try:
+            max_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).eq("context", context).order("message_order", desc=True).limit(1).execute()
+            if max_order_response.data and len(max_order_response.data) > 0:
+                max_order = max_order_response.data[0].get("message_order", -1)
+                # Safety check: if max_order is too large (timestamp-based), reset to 0
+                # PostgreSQL INTEGER max is 2,147,483,647, but timestamps are ~1.7 trillion
+                # Timestamps in milliseconds are typically > 1 billion (1,000,000,000)
+                if max_order and max_order > 1000000000:  # If it's a timestamp (milliseconds), reset
+                    print(f"WARNING: Found timestamp-based message_order ({max_order}), resetting to 0")
+                    current_order = 0
+                elif max_order and max_order > 2147483640:  # Close to INTEGER max, reset to avoid overflow
+                    print(f"WARNING: message_order ({max_order}) too close to INTEGER max, resetting to 0")
+                    current_order = 0
+                else:
+                    current_order = (max_order if max_order is not None else -1) + 1
+            else:
+                current_order = 0
+        except Exception as e:
+            import traceback
+            print(f"Error getting message order: {e}")
+            current_order = 0
+        
+        # Save user message (file upload)
+        user_message_data = {
+            "user_id": user_id,
+            "role": "user",
+            "content": f"Uploaded {file.filename} file",
+            "message_order": current_order,
+            "context": context
+        }
+        user_insert_response = supabase_service.table("chat_messages").insert(user_message_data).execute()
+        user_message_id = user_insert_response.data[0]["id"] if user_insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+        current_order += 1
+        
+        # Handle the result - for CSV files, process each row individually
+        if file_extension == 'csv' and extracted_data and extracted_data.get('rows'):
+            # Process each CSV row individually
+            csv_rows = extracted_data.get('rows', [])
+            created_count = 0
+            failed_count = 0
+            failed_symbols = []
+            
+            for row in csv_rows:
+                try:
+                    # Extract data from CSV row
+                    symbol_key = None
+                    for key in row.keys():
+                        if 'symbol' in key.lower():
+                            symbol_key = key
+                            break
+                    
+                    if not symbol_key or not row.get(symbol_key):
+                        continue  # Skip rows without symbol
+                    
+                    # Build asset_data from CSV row
+                    symbol = str(row[symbol_key]).strip().strip('"')
+                    qty_str = None
+                    price_str = None
+                    
+                    # Find quantity column
+                    for key in row.keys():
+                        if 'qty' in key.lower() or 'quantity' in key.lower():
+                            qty_str = row.get(key)
+                            break
+                    
+                    # Find price column
+                    for key in row.keys():
+                        if 'avg price' in key.lower() or 'average price' in key.lower() or 'purchase price' in key.lower():
+                            price_str = row.get(key)
+                            break
+                    
+                    if not qty_str or not price_str:
+                        failed_count += 1
+                        failed_symbols.append(symbol)
+                        continue
+                    
+                    try:
+                        quantity = float(qty_str)
+                        purchase_price = float(price_str)
+                    except (ValueError, TypeError):
+                        failed_count += 1
+                        failed_symbols.append(symbol)
+                        continue
+                    
+                    # Determine market (Indian stocks default to India)
+                    market = "india"  # Default for Indian stock names
+                    currency = "INR"
+                    
+                    # Build asset data
+                    from datetime import date
+                    csv_asset_data = {
+                        "asset_type": "stock",
+                        "stock_symbol": symbol,
+                        "asset_name": symbol,
+                        "quantity": quantity,
+                        "purchase_price": purchase_price,
+                        "purchase_date": date.today().strftime('%Y-%m-%d'),  # Default to today
+                        "market": market,
+                        "currency": currency,
+                        "family_member_name": "self"  # Default to self
+                    }
+                    
+                    # Create asset
+                    result_msg = await create_asset_from_llm_data(csv_asset_data, user_id, context)
+                    if result_msg.startswith("✅"):
+                        created_count += 1
+                    else:
+                        failed_count += 1
+                        failed_symbols.append(symbol)
+                except Exception as e:
+                    print(f"Error processing CSV row: {e}")
+                    failed_count += 1
+                    if symbol_key and row.get(symbol_key):
+                        failed_symbols.append(str(row[symbol_key]))
+            
+            # Build response message
+            if created_count > 0:
+                llm_response = f"✅ Successfully added {created_count} stock{'s' if created_count > 1 else ''} from your CSV file to your portfolio."
+                if failed_count > 0:
+                    llm_response += f" {failed_count} row{'s' if failed_count > 1 else ''} could not be processed."
+            else:
+                llm_response = f"❌ Could not add any stocks from the CSV file. Please check the file format."
+        elif action == "none":
+            # Missing information - return the message asking for it
+            llm_response = asset_result.get("response", "I need more information to add the assets from your file.")
+        elif action == "add":
+            # Create the asset using the helper function (for PDF files or single assets)
+            llm_response = await create_asset_from_llm_data(asset_data, user_id, context)
+            if not llm_response.startswith("✅"):
+                # If creation failed, prepend file info
+                llm_response = f"I've extracted information from your {file_extension.upper()} file. {llm_response}"
+        else:
+            llm_response = asset_result.get("response", f"Processed your {file_extension.upper()} file.")
+        
+        # Save assistant response
+        assistant_message_data = {
+            "user_id": user_id,
+            "role": "assistant",
+            "content": llm_response,
+            "message_order": current_order + 1,
+            "context": context
+        }
+        assistant_insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+        assistant_message_id = assistant_insert_response.data[0]["id"] if assistant_insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+        
+        return ChatResponse(
+            response=llm_response,
+            message_id=assistant_message_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"ERROR in upload_file: {error_details}")
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")

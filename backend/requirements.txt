@@ -10,6 +10,8 @@ google-genai  # For Google Gemini models
 yfinance>=0.2.0  # For stock price data
 aiohttp>=3.9.0  # For async HTTP requests
 PyJWT>=2.8.0  # For JWT token decoding
+PyPDF2>=3.0.0  # For PDF parsing
+pdfplumber>=0.10.0  # Alternative PDF parsing library
 # Other LLM providers (optional)
 # openai>=1.0.0  # For OpenAI GPT models
 # anthropic>=0.18.0  # For Anthropic Claude models

@@ -353,6 +353,9 @@ class AssetLLMService:
         portfolio_data: Optional[Dict] = None,
         conversation_history: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
+        print(f"DEBUG asset_llm_service: user_message length: {len(user_message)}")
+        print(f"DEBUG asset_llm_service: First 500 chars of user_message:\n{user_message[:500]}")
+        print(f"DEBUG asset_llm_service: conversation_history length: {len(conversation_history) if conversation_history else 0}")
         """
         Process asset command using Gemini LLM
         """
@@ -473,6 +476,9 @@ If you cannot find a matching asset, set action to "none" and explain that the a
                 conversation_context += "CRITICAL INSTRUCTION: You MUST extract information from ALL messages in the conversation history above, not just the current/last message. "
                 conversation_context += "If the user mentioned quantity in message 1, stock name in message 2, and price in message 3, you MUST combine all of them. "
                 conversation_context += "Only ask for information that is truly missing from ALL messages in the conversation.\n"
+            else:
+                conversation_context = "\n\n=== NO PREVIOUS CONVERSATION HISTORY ===\n"
+                conversation_context += "This is the first message in the conversation. All information must be extracted from the current user message below.\n"
             
             prompt = f"""You are a financial assistant that helps users manage their assets through natural language commands.
 
@@ -496,20 +502,37 @@ CRITICAL RULES - EXTRACT INFORMATION THAT IS PRESENT:
 - Extract quantities from phrases like "100 shares" or "100 stocks" or "100" → quantity: 100
 - Extract prices from phrases like "at 1550" or "for 1500 rupees" or "costs 1550" → purchase_price: 1550 or 1500
 - Extract stock symbols from stock names: "Reliance" → "RELIANCE", "TCS" → "TCS", "Infosys" → "INFY"
-- Only set action to "none" if information is TRULY missing and cannot be extracted or inferred from the message.
-- DO NOT put assumptions in the "notes" field. If information is missing, set action to "none" instead of proceeding.
-- DO NOT proceed with action "add" if ANY required field is missing. You MUST set action to "none" and ask for the missing information.
+- Only set action to "none" if CRITICAL information is missing and cannot be extracted or inferred from the message.
+- IMPORTANT: Add assets with whatever information is available. Use default values for missing optional fields:
+  * If purchase_date is missing, use today's date (YYYY-MM-DD format)
+  * If family_member_name is missing for stocks/bank accounts, use "self"
+  * If market is missing, infer from stock name (Indian stocks → "india", others → ask)
+- DO NOT put assumptions in the "notes" field. 
+- For CSV file uploads: Process each row and add assets with available data. You can add multiple assets in one request.
 - For DELETE and UPDATE operations, you MUST provide the asset_id from the portfolio data. If you cannot find a matching asset, set action to "none" and ask the user to clarify which asset they mean.
 
-For ADD operations, EXTRACT all information from the ENTIRE conversation history (all messages above), not just the current message:
+For ADD operations, EXTRACT all information from the ENTIRE conversation history (all messages above), not just the current message.
 
-REQUIRED FIELDS BY ASSET TYPE:
-- Stock: asset_name, stock_symbol, quantity, purchase_price, purchase_date, market, family_member_name (name of the stock owner - must be one of the family members, or "self" for the user)
-- Mutual Fund: asset_name, mutual_fund_code, units, market
-- Bank Account: bank_name (required - this will be used as account_name if account_name is not provided), account_number, account_type (savings/checking/current), current_value (bank balance), market, family_member_name (name of the account owner - must be one of the family members, or "self" for the user). Note: If only bank_name is provided, it will be used as the account_name.
-- Fixed Deposit: asset_name, principal_amount, fd_interest_rate, start_date, maturity_date, market
-- Insurance Policy: asset_name, policy_number, amount_insured, issue_date, date_of_maturity, premium, market
-- Commodity: asset_name, commodity_name, form, commodity_quantity, commodity_units, commodity_purchase_date, commodity_purchase_price, market
+SPECIAL HANDLING FOR CSV FILE UPLOADS:
+- If the user has uploaded a CSV file, the user message will contain ALL rows from the CSV file
+- You MUST process EVERY row in the CSV file
+- Each row represents a separate asset that needs to be added
+- Extract asset information from each row individually
+- CRITICAL: For CSV files with multiple rows, you MUST return an array of assets in the "assets" field
+- If multiple assets are present in the CSV, return them ALL in the "assets" array
+- If a row is missing critical required information (stock_symbol, quantity, purchase_price), skip that row but process all other rows
+
+REQUIRED VS OPTIONAL FIELDS BY ASSET TYPE:
+- Stock:
+  * REQUIRED: stock_symbol, quantity, purchase_price, market
+  * OPTIONAL (use defaults if missing): asset_name (can be derived from stock_symbol), purchase_date (default to today's date), family_member_name (default to "self")
+- Mutual Fund: asset_name, mutual_fund_code, units, market (all required)
+- Bank Account:
+  * REQUIRED: bank_name, account_number, account_type, current_value, market
+  * OPTIONAL: family_member_name (default to "self"), asset_name (defaults to bank_name)
+- Fixed Deposit: asset_name, principal_amount, fd_interest_rate, start_date, maturity_date, market (all required)
+- Insurance Policy: asset_name, policy_number, amount_insured, issue_date, date_of_maturity, premium, market (all required)
+- Commodity: asset_name, commodity_name, form, commodity_quantity, commodity_units, commodity_purchase_date, commodity_purchase_price, market (all required)
 
 IMPORTANT FOR STOCKS AND BANK ACCOUNTS:
 - family_member_name is REQUIRED for both stocks and bank accounts. It must be the name of a family member from the portfolio, or "self" if the asset belongs to the user.
@@ -543,26 +566,50 @@ IMPORTANT:
 - Convert dates from any format (DD.MM.YYYY, DD-MM-YYYY, etc.) to YYYY-MM-DD format
 - Only set action to "none" if information is TRULY missing and cannot be extracted or inferred from context
 
-Current user message (latest): {user_message}
+=== CURRENT USER MESSAGE (LATEST) - THIS IS THE MAIN DATA SOURCE ===
+{user_message}
+=== END OF CURRENT USER MESSAGE ===
 
-Remember: Extract information from ALL messages in the conversation history above, not just this current message!
+CRITICAL: The current user message above contains the complete data (especially for CSV file uploads which include all rows).
+Extract ALL information from the current user message. 
+If there is conversation history above, also check those messages for any additional context.
+Remember: Extract information from ALL messages in the conversation history above AND especially from the current user message!
 
 CRITICAL: You MUST respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations - just the raw JSON.
 
 If all information is present, return:
+- For a single asset OR CSV files with multiple assets:
 {{
   "action": "add",
-  "asset_type": "stock",
-  "asset_name": "...",
-  "stock_symbol": "...",
-  "quantity": 100,
-  "purchase_price": 1550,
-  "purchase_date": "2025-11-24",
-  "market": "india",
-  "family_member_name": "self" or "John" or "brother" (name of the stock owner)
+  "assets": [
+    {{
+      "asset_type": "stock",
+      "asset_name": "...",
+      "stock_symbol": "...",
+      "quantity": 100,
+      "purchase_price": 1550,
+      "purchase_date": "2025-11-24",
+      "market": "india",
+      "family_member_name": "self"
+    }},
+    {{
+      "asset_type": "stock",
+      "asset_name": "...",
+      "stock_symbol": "...",
+      "quantity": 50,
+      "purchase_price": 2000,
+      "purchase_date": "2025-11-24",
+      "market": "india",
+      "family_member_name": "self"
+    }}
+  ]
 }}
 
-If information is missing, return:
+- For CSV files: The "assets" array MUST contain one asset object for EACH row in the CSV file that has the required fields (stock_symbol, quantity, purchase_price, market)
+- If the user message contains CSV data with multiple rows, process ALL rows and return ALL assets in the "assets" array
+- Each asset in the array should have all the fields for that specific row
+
+If information is missing for ALL assets, return:
 {{
   "action": "none",
   "message": "I need a few more details to add this asset: Please specify the market (India or Europe), the stock symbol (e.g., RELIANCE, AAPL), and the purchase date."
@@ -689,59 +736,65 @@ Respond with ONLY the JSON object."""
                         action = 'add'  # Try to proceed if we have asset type AND some other info
                         args['action'] = 'add'
                     else:
+                        # No additional info, keep action as 'none'
+                        pass
             
-            # Validate required fields if action is "add" - if missing, change to "none"
+            # Validate required fields if action is "add" - only block on truly critical fields
             if action == 'add':
                 asset_type = args.get('asset_type')
-                missing_fields = []
+                missing_critical_fields = []
                 
                 # Check for market (required for all asset types) - convert to currency later
                 market = args.get('market')
                 if not market:
-                    missing_fields.append('market (India or Europe)')
+                    missing_critical_fields.append('market (India or Europe)')
                 elif market.lower() not in ['india', 'europe']:
-                    missing_fields.append('market (must be "India" or "Europe")')
+                    missing_critical_fields.append('market (must be "India" or "Europe")')
                 
-                # Check required fields by asset type
+                # Check critical fields by asset type (allow optional fields to be missing)
                 if asset_type == 'stock':
-                    if not args.get('asset_name'):
-                        missing_fields.append('asset name')
                     if not args.get('stock_symbol'):
-                        missing_fields.append('stock symbol')
+                        missing_critical_fields.append('stock symbol')
                     if not args.get('quantity'):
-                        missing_fields.append('quantity (number of shares)')
+                        missing_critical_fields.append('quantity (number of shares)')
                     if not args.get('purchase_price'):
-                        missing_fields.append('purchase price')
+                        missing_critical_fields.append('purchase price')
+                    
+                    # Set defaults for optional fields
+                    if not args.get('asset_name') and args.get('stock_symbol'):
+                        args['asset_name'] = args.get('stock_symbol')  # Use symbol as name
                     if not args.get('purchase_date'):
-                        missing_fields.append('purchase date')
+                        from datetime import date
+                        args['purchase_date'] = date.today().strftime('%Y-%m-%d')  # Default to today
                     if not args.get('family_member_name'):
-                        missing_fields.append('stock owner (family member name or "self")')
+                        args['family_member_name'] = 'self'  # Default to self
                 elif asset_type == 'mutual_fund':
                     if not args.get('asset_name'):
-                        missing_fields.append('asset name')
+                        missing_critical_fields.append('asset name')
                     if not args.get('mutual_fund_code'):
-                        missing_fields.append('mutual fund code')
+                        missing_critical_fields.append('mutual fund code')
                     if not args.get('units'):
-                        missing_fields.append('units')
+                        missing_critical_fields.append('units')
                 elif asset_type == 'bank_account':
                     if not args.get('bank_name'):
-                        missing_fields.append('bank name')
+                        missing_critical_fields.append('bank name')
                     # Note: asset_name is optional - if not provided, bank_name will be used as account_name
                     # So we don't require asset_name if bank_name is present
                     if not args.get('account_number'):
-                        missing_fields.append('account number')
+                        missing_critical_fields.append('account number')
                     if not args.get('account_type'):
-                        missing_fields.append('account type (savings, checking, or current)')
+                        missing_critical_fields.append('account type (savings, checking, or current)')
                     if not args.get('current_value'):
-                        missing_fields.append('current balance (bank balance)')
+                        missing_critical_fields.append('current balance (bank balance)')
+                    # Set default for family_member_name if missing
                     if not args.get('family_member_name'):
-                        missing_fields.append('account owner (family member name or "self")')
+                        args['family_member_name'] = 'self'  # Default to self
                 
-                if missing_fields:
+                if missing_critical_fields:
                     action = 'none'
                     args['action'] = 'none'
-                    args['missing_fields'] = missing_fields
-                    args['message'] = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_fields)}."
+                    args['missing_fields'] = missing_critical_fields
+                    args['message'] = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_critical_fields)}."
                 else:
                     # Convert market to currency
                     if market:
@@ -801,9 +854,9 @@ Respond with ONLY the JSON object."""
             # Build response message
             if action == 'add':
                 asset_type = args.get('asset_type', 'unknown')
-                asset_name = args.get('asset_name', 'New Asset')
-                response_msg = f"I'll add a new {asset_type} asset: {asset_name}"
-                needs_confirmation = True
+                asset_name = args.get('asset_name', args.get('stock_symbol', 'New Asset'))
+                response_msg = f"I've added a new {asset_type} asset: {asset_name} to your portfolio."
+                needs_confirmation = False  # Don't need confirmation since we're adding with available data
             elif action == 'delete':
                 asset_id = args.get('asset_id', '')
                 response_msg = f"I'll delete the asset with ID: {asset_id}"
