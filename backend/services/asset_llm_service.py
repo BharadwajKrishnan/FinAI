@@ -130,8 +130,101 @@ class AssetLLMService:
                 args['market'] = 'europe'
                 print(f"DEBUG: Extracted market from currency: europe")
         
+        # Extract bank account information if missing - check conversation history too
+        if args.get('asset_type') == 'bank_account':
+            # Extract bank name - check conversation history
+            if not args.get('bank_name'):
+                # Common Indian banks
+                indian_banks = ['hdfc', 'sbi', 'icici', 'axis', 'pnb', 'bob', 'canara', 'union', 'indian bank', 'indianbank', 'kotak', 'yes bank', 'yesbank']
+                for bank in indian_banks:
+                    if bank in combined_text_lower:
+                        args['bank_name'] = bank.title() + ' Bank' if not bank.endswith('bank') else bank.title()
+                        if not args.get('market'):
+                            args['market'] = 'india'
+                        print(f"DEBUG: Extracted bank_name from conversation: {args['bank_name']}")
+                        break
+            
+            # If account name is not provided but bank name is, use bank name as account name
+            if not args.get('asset_name') and args.get('bank_name'):
+                args['asset_name'] = args.get('bank_name')
+                print(f"DEBUG: Using bank_name as asset_name: {args['asset_name']}")
+            
+            # Extract account number - check current message, conversation history, and notes field
+            if not args.get('account_number'):
+                # First, check if LLM put it in notes field (e.g., "Account number reconfirmed as 12831283")
+                notes = args.get('notes', '')
+                if notes:
+                    # Look for account number patterns in notes - try multiple patterns
+                    notes_lower = notes.lower()
+                    # Pattern 1: "account number reconfirmed as 12831283" or "account number is 12831283"
+                    acc_match_notes = re.search(r'(?:account\s*(?:number|no|#)?|acc\s*(?:number|no|#)?)\s*(?:is|:)?\s*(?:reconfirmed\s+as\s+)?(\d+)', notes_lower)
+                    if acc_match_notes:
+                        args['account_number'] = acc_match_notes.group(1)
+                        print(f"DEBUG: Extracted account_number from notes field (pattern 1): {args['account_number']}")
+                    else:
+                        # Pattern 2: "reconfirmed as 12831283" or "is 12831283"
+                        simple_match_notes = re.search(r'(?:reconfirmed\s+as|is|:)\s+(\d{6,})', notes_lower)
+                        if simple_match_notes:
+                            args['account_number'] = simple_match_notes.group(1)
+                            print(f"DEBUG: Extracted account_number from notes field (pattern 2): {args['account_number']}")
+                
+                # If not found in notes, check current message and conversation history (combined_text)
+                if not args.get('account_number'):
+                    # Patterns: "account number 123456", "acc no 1234", "account 1234567890", "is 12831283"
+                    acc_match = re.search(r'(?:account\s*(?:number|no|#)?|acc\s*(?:number|no|#)?)\s*(?:is|:)?\s*(\d+)', combined_text_lower)
+                    if acc_match:
+                        args['account_number'] = acc_match.group(1)
+                        print(f"DEBUG: Extracted account_number from conversation: {args['account_number']}")
+                    else:
+                        # Try simpler pattern: "is 12831283" or "reconfirmed as 12831283" (for follow-up messages)
+                        simple_match = re.search(r'(?:is|as|:)\s+(\d{6,})', combined_text_lower)
+                        if simple_match:
+                            args['account_number'] = simple_match.group(1)
+                            print(f"DEBUG: Extracted account_number from simple pattern: {args['account_number']}")
+                        else:
+                            # Try even simpler: just a long number (6+ digits) that might be account number
+                            # But only if we're in a bank account context
+                            number_match = re.search(r'\b(\d{8,})\b', combined_text_lower)
+                            if number_match:
+                                args['account_number'] = number_match.group(1)
+                                print(f"DEBUG: Extracted account_number as long number: {args['account_number']}")
+            
+            # Extract account type - check conversation history too
+            if not args.get('account_type'):
+                if 'savings' in combined_text_lower:
+                    args['account_type'] = 'savings'
+                    print(f"DEBUG: Extracted account_type: savings")
+                elif 'checking' in combined_text_lower:
+                    args['account_type'] = 'checking'
+                    print(f"DEBUG: Extracted account_type: checking")
+                elif 'current' in combined_text_lower and 'account' in combined_text_lower:
+                    args['account_type'] = 'current'
+                    print(f"DEBUG: Extracted account_type: current")
+            
+            # Extract current balance - check conversation history too, handle comma-separated numbers
+            if not args.get('current_value'):
+                # Patterns: "balance of 50000", "has 10000", "with 5000 rupees", "50000 in account", "50,000 rupees"
+                balance_patterns = [
+                    r'balance\s+(?:of|is|:)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+                    r'balance\s+(?:of|is|:)?\s*(\d+(?:\.\d+)?)',
+                    r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(?:rupees?|₹|inr|euros?|€|eur)',
+                    r'(\d+(?:\.\d+)?)\s*(?:rupees?|₹|inr|euros?|€|eur)',
+                    r'has\s+(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+                    r'has\s+(\d+(?:\.\d+)?)',
+                    r'with\s+(\d{1,3}(?:,\d{3})*(?:\.\d+)?)',
+                    r'with\s+(\d+(?:\.\d+)?)',
+                ]
+                for pattern in balance_patterns:
+                    balance_match = re.search(pattern, combined_text_lower)
+                    if balance_match:
+                        # Remove commas from the number
+                        balance_str = balance_match.group(1).replace(',', '')
+                        args['current_value'] = float(balance_str)
+                        print(f"DEBUG: Extracted current_value (balance) from conversation: {args['current_value']}")
+                        break
+        
         # Extract family_member_name if missing - check notes, other fields, and conversation
-        if not args.get('family_member_name') and args.get('asset_type') == 'stock':
+        if not args.get('family_member_name') and args.get('asset_type') in ['stock', 'bank_account']:
             # Check if LLM put it in notes or other fields
             notes = args.get('notes', '').lower()
             bank_name = args.get('bank_name', '').lower()  # Sometimes LLM puts it here incorrectly
@@ -142,7 +235,7 @@ class AssetLLMService:
             # Use regex to match whole words/phrases to avoid false positives
             self_patterns = [
                 r'\bowner\s+is\s+(?:self|me|myself)\b',
-                r'\bstock\s+owner\s+is\s+(?:self|me|myself)\b',
+                r'\b(?:stock|account)\s+owner\s+is\s+(?:self|me|myself)\b',
                 r'\bfor\s+(?:self|me|myself)\b',
                 r'\bby\s+(?:self|me|myself)\b',
                 r'\bpurchased\s+by\s+(?:self|me|myself)\b',
@@ -150,8 +243,7 @@ class AssetLLMService:
                 r'\bi\s+purchased\b',
                 r'\bi\s+bought\b',
                 r'\bi\s+own\b',
-                r'\bmy\s+stock\b',
-                r'\bmy\s+asset\b',
+                r'\bmy\s+(?:stock|account|bank\s+account|asset)\b',
                 r'\bbelongs\s+to\s+(?:me|self|myself)\b',
                 r'\bis\s+(?:mine|my)\b',
             ]
@@ -163,13 +255,18 @@ class AssetLLMService:
                     family_member_found = True
                     break
             
-            # Also check for standalone "I" at the start of sentences (e.g., "I purchased", "I bought")
+            # Also check for standalone "I" at the start of sentences (e.g., "I purchased", "I bought", "I have an account")
             # and simple ownership indicators
             if not family_member_found:
                 # Check if message starts with "I" followed by action words
                 if re.search(r'^\s*i\s+(?:purchased|bought|own|have)', user_lower):
                     args['family_member_name'] = 'self'
                     print(f"DEBUG: Extracted family_member_name='self' from 'I' at start of message")
+                    family_member_found = True
+                # Check for "my account", "my bank account" patterns
+                elif re.search(r'\bmy\s+(?:bank\s+)?account\b', user_lower):
+                    args['family_member_name'] = 'self'
+                    print(f"DEBUG: Extracted family_member_name='self' from 'my account' pattern")
                     family_member_found = True
             
             # Check for family member names in combined text (case-insensitive)
@@ -439,25 +536,32 @@ For ADD operations, EXTRACT all information from the ENTIRE conversation history
 REQUIRED FIELDS BY ASSET TYPE:
 - Stock: asset_name, stock_symbol, quantity, purchase_price, purchase_date, market, family_member_name (name of the stock owner - must be one of the family members, or "self" for the user)
 - Mutual Fund: asset_name, mutual_fund_code, units, market
-- Bank Account: asset_name, bank_name, account_type, current_value, market
+- Bank Account: bank_name (required - this will be used as account_name if account_name is not provided), account_number, account_type (savings/checking/current), current_value (bank balance), market, family_member_name (name of the account owner - must be one of the family members, or "self" for the user). Note: If only bank_name is provided, it will be used as the account_name.
 - Fixed Deposit: asset_name, principal_amount, fd_interest_rate, start_date, maturity_date, market
 - Insurance Policy: asset_name, policy_number, amount_insured, issue_date, date_of_maturity, premium, market
 - Commodity: asset_name, commodity_name, form, commodity_quantity, commodity_units, commodity_purchase_date, commodity_purchase_price, market
 
-IMPORTANT FOR STOCKS:
-- family_member_name is REQUIRED. It must be the name of a family member from the portfolio, or "self" if the stock belongs to the user.
+IMPORTANT FOR STOCKS AND BANK ACCOUNTS:
+- family_member_name is REQUIRED for both stocks and bank accounts. It must be the name of a family member from the portfolio, or "self" if the asset belongs to the user.
 - If the user mentions a family member name that is not in the portfolio, you should still extract it, but note that it needs to be added in the Profile.
-- Extract family member names from phrases like "for my brother", "for John", "for my father", "for self", "for me", etc.
-- CRITICAL: If the user says "I", "self", "me", "myself", "I purchased", "I bought", "my stock", "owner is self", "stock owner is self", "stock owner is me", or any variation indicating the stock belongs to the user, you MUST set family_member_name to "self". Do NOT leave it empty or undefined.
-- CRITICAL: If the user says "I", "self", "me", "myself", "I purchased", "I bought", "my stock", "owner is self", "stock owner is self", or any variation indicating the stock belongs to the user, you MUST set family_member_name to "self".
+- Extract family member names from phrases like "for my brother", "for John", "for my father", "for self", "for me", "my account", "my bank account", etc.
+- CRITICAL: If the user says "I", "self", "me", "myself", "I purchased", "I bought", "my stock", "my account", "my bank account", "owner is self", "account owner is self", "stock owner is self", "stock owner is me", or any variation indicating the asset belongs to the user, you MUST set family_member_name to "self". Do NOT leave it empty or undefined.
+
+IMPORTANT FOR BANK ACCOUNTS:
+- Extract bank name from phrases like "HDFC bank", "SBI account", "ICICI savings", etc.
+- Extract account number if mentioned (e.g., "account number 1234567890", "acc no 1234")
+- Extract account type from phrases like "savings account", "checking account", "current account", or infer from context
+- Extract current balance from phrases like "balance of 50000", "has 10000 rupees", "with 5000 euros", etc.
+- If balance is mentioned in rupees/INR, market is "india". If mentioned in euros/EUR, market is "europe".
 
 EXTRACTION RULES (APPLY TO ALL MESSAGES IN CONVERSATION HISTORY):
 - Extract stock names from ANY message in the conversation (e.g., "Reliance" → stock_symbol: "RELIANCE", asset_name: "Reliance Industries")
 - Extract quantities from ANY message (e.g., "100 shares" → quantity: 100)
 - Extract prices from ANY message (e.g., "at 1550" or "for 1500 rupees" → purchase_price: 1550 or 1500)
 - Extract dates from ANY message and convert to YYYY-MM-DD format (e.g., "24.11.2025" → "2025-11-24", "24-12-2025" → "2025-12-24")
-- Extract family member names from ANY message (e.g., "for my brother", "Natesh purchased", "for John" → family_member_name)
-- CRITICAL for family_member_name: If ANY message contains "I", "self", "me", "myself", "I purchased", "I bought", "owner is self", "stock owner is self", "stock owner is me", or similar phrases indicating the user owns the stock, you MUST set family_member_name to "self". This is a REQUIRED field - do not leave it empty.
+- Extract family member names from ANY message (e.g., "for my brother", "Natesh purchased", "for John", "my account", "my bank account" → family_member_name)
+- CRITICAL for family_member_name: If ANY message contains "I", "self", "me", "myself", "I purchased", "I bought", "my account", "my bank account", "owner is self", "account owner is self", "stock owner is self", "stock owner is me", or similar phrases indicating the user owns the asset, you MUST set family_member_name to "self". This is a REQUIRED field for stocks and bank accounts - do not leave it empty.
+- Extract bank account information from ANY message: bank name, account number, account type, balance
 - Infer market from ANY message in the conversation:
   * Indian stock names (Reliance, TCS, Infosys, HDFC, ICICI, SBI, etc.) → market: "india"
   * Mentions of "rupees", "₹", "INR", "Indian market" → market: "india"
@@ -606,7 +710,7 @@ Respond with ONLY the JSON object."""
             # Only run post-processing if action is 'add' OR if user message contains asset-related keywords
             # This prevents false positives from greetings like "hi"
             user_lower = user_message.lower()
-            asset_keywords = ['add', 'create', 'purchase', 'buy', 'stock', 'share', 'mutual fund', 'asset', 'portfolio', 'invest']
+            asset_keywords = ['add', 'create', 'purchase', 'buy', 'stock', 'share', 'mutual fund', 'bank account', 'account', 'asset', 'portfolio', 'invest']
             has_asset_intent = any(keyword in user_lower for keyword in asset_keywords)
             
             # Only post-process if action is 'add' OR if user message suggests asset management intent
@@ -619,7 +723,8 @@ Respond with ONLY the JSON object."""
                 # 3. We have at least some other required information (not just asset_type)
                 if action == 'none' and has_asset_intent and args.get('asset_type'):
                     # Check if we have at least one other piece of information (name, quantity, price, etc.)
-                    has_additional_info = any(args.get(key) for key in ['asset_name', 'stock_symbol', 'quantity', 'purchase_price', 'purchase_date', 'market'])
+                    # Include fields for both stocks and bank accounts
+                    has_additional_info = any(args.get(key) for key in ['asset_name', 'stock_symbol', 'quantity', 'purchase_price', 'purchase_date', 'market', 'bank_name', 'account_number', 'account_type', 'current_value', 'family_member_name'])
                     if has_additional_info:
                         action = 'add'  # Try to proceed if we have asset type AND some other info
                         args['action'] = 'add'
@@ -661,14 +766,18 @@ Respond with ONLY the JSON object."""
                     if not args.get('units'):
                         missing_fields.append('units')
                 elif asset_type == 'bank_account':
-                    if not args.get('asset_name'):
-                        missing_fields.append('account name')
                     if not args.get('bank_name'):
                         missing_fields.append('bank name')
+                    # Note: asset_name is optional - if not provided, bank_name will be used as account_name
+                    # So we don't require asset_name if bank_name is present
+                    if not args.get('account_number'):
+                        missing_fields.append('account number')
                     if not args.get('account_type'):
                         missing_fields.append('account type (savings, checking, or current)')
                     if not args.get('current_value'):
-                        missing_fields.append('current balance')
+                        missing_fields.append('current balance (bank balance)')
+                    if not args.get('family_member_name'):
+                        missing_fields.append('account owner (family member name or "self")')
                 
                 if missing_fields:
                     print(f"DEBUG: Missing required fields: {missing_fields}, changing action to 'none'")

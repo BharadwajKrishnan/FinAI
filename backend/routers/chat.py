@@ -568,6 +568,17 @@ AVAILABLE MARKETS:
    
    If ANY required information is missing, ask the user for it clearly. Do NOT assume or guess values. Extract information from the entire conversation history if available.
 
+   When the user explicitly asks to ADD a bank account, you must collect ALL required information:
+   - Account Name (e.g., "HDFC Savings", "SBI Current Account")
+   - Bank Name (e.g., "HDFC", "SBI", "ICICI")
+   - Account Number
+   - Account Type (savings, checking, or current)
+   - Current Balance (bank balance)
+   - Account Owner (family member name from the list above, or "self"/"me"/"myself" for the user)
+   - Market (India or Europe)
+   
+   If ANY required information is missing, ask the user for it clearly. Do NOT assume or guess values. Extract information from the entire conversation history if available.
+
 4. When the user explicitly asks to UPDATE an asset, identify the asset from the portfolio and update only the fields they specify.
 
 5. When the user explicitly asks to DELETE an asset, identify the asset from the portfolio and confirm the deletion.
@@ -788,6 +799,19 @@ When analyzing expenses:
                                     missing_fields.append("purchase date")
                                 if not asset_data.get("family_member_name"):
                                     missing_fields.append("stock owner (family member name or 'self')")
+                            elif asset_type == "bank_account":
+                                if not asset_data.get("asset_name"):
+                                    missing_fields.append("account name")
+                                if not asset_data.get("bank_name"):
+                                    missing_fields.append("bank name")
+                                if not asset_data.get("account_number"):
+                                    missing_fields.append("account number")
+                                if not asset_data.get("account_type"):
+                                    missing_fields.append("account type (savings, checking, or current)")
+                                if not asset_data.get("current_value"):
+                                    missing_fields.append("current balance (bank balance)")
+                                if not asset_data.get("family_member_name"):
+                                    missing_fields.append("account owner (family member name or 'self')")
                             
                             if missing_fields:
                                 error_msg = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_fields)}."
@@ -812,12 +836,12 @@ When analyzing expenses:
                                     message_id=message_id
                                 )
                             
-                            # Handle family member matching for stocks
+                            # Handle family member matching for stocks and bank accounts
                             family_member_id = None
                             family_member_name_provided = asset_data.get("family_member_name", "").strip().lower()
                             family_member_not_found_message = ""
                             
-                            if asset_type == "stock":
+                            if asset_type in ["stock", "bank_account"]:
                                 if family_member_name_provided:
                                     # Normalize: "self", "me", "myself" -> None (user themselves)
                                     if family_member_name_provided in ["self", "me", "myself", ""]:
@@ -828,13 +852,34 @@ When analyzing expenses:
                                             family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
                                             family_members_list = family_members_response.data if family_members_response.data else []
                                             
-                                            # Try to find matching family member (case-insensitive, partial match)
+                                            # Try to find matching family member (prioritize exact match, then partial match)
                                             matched_member = None
+                                            # First, try exact match (case-insensitive)
                                             for member in family_members_list:
                                                 member_name = member.get("name", "").lower()
-                                                if family_member_name_provided in member_name or member_name in family_member_name_provided:
+                                                if member_name == family_member_name_provided:
                                                     matched_member = member
+                                                    print(f"DEBUG: Exact match found for family member: {member.get('name')}")
                                                     break
+                                            
+                                            # If no exact match, try partial match (but be more strict)
+                                            if not matched_member:
+                                                for member in family_members_list:
+                                                    member_name = member.get("name", "").lower()
+                                                    # Only match if the provided name is a complete word/phrase in the member name
+                                                    # e.g., "krishnan" should match "krishnan" but not "bharadwaj krishnan" unless it's the last name
+                                                    # Check if provided name matches the last word of the member name
+                                                    member_name_parts = member_name.split()
+                                                    if len(member_name_parts) > 1 and family_member_name_provided == member_name_parts[-1]:
+                                                        # Last name match (e.g., "krishnan" matches "bharadwaj krishnan")
+                                                        matched_member = member
+                                                        print(f"DEBUG: Last name match found for family member: {member.get('name')}")
+                                                        break
+                                                    elif family_member_name_provided in member_name and len(family_member_name_provided) >= 4:
+                                                        # Partial match only if the provided name is at least 4 characters (to avoid false matches)
+                                                        matched_member = member
+                                                        print(f"DEBUG: Partial match found for family member: {member.get('name')}")
+                                                        break
                                             
                                             if matched_member:
                                                 family_member_id = matched_member.get("id")
@@ -842,7 +887,8 @@ When analyzing expenses:
                                             else:
                                                 # Family member not found - default to self but note it
                                                 family_member_id = None
-                                                family_member_not_found_message = f" Note: The family member '{asset_data.get('family_member_name')}' is not yet added in your Profile. The stock has been assigned to you (Self). Please add this family member in the Profile section if you want to assign assets to them in the future."
+                                                asset_type_name = "stock" if asset_type == "stock" else "bank account"
+                                                family_member_not_found_message = f" Note: The family member '{asset_data.get('family_member_name')}' is not yet added in your Profile. The {asset_type_name} has been assigned to you (Self). Please add this family member in the Profile section if you want to assign assets to them in the future."
                                                 print(f"Family member '{family_member_name_provided}' not found, defaulting to self")
                                         except Exception as e:
                                             print(f"Error fetching family members: {e}")
@@ -851,8 +897,14 @@ When analyzing expenses:
                                     # No family member name provided - default to self
                                     family_member_id = None
                             
+                            # For bank accounts, if asset_name is not provided, use bank_name as asset_name
+                            asset_name = asset_data.get("asset_name")
+                            if asset_type == "bank_account" and not asset_name and asset_data.get("bank_name"):
+                                asset_name = asset_data.get("bank_name")
+                                print(f"DEBUG: Using bank_name as asset_name: {asset_name}")
+                            
                             asset_create_data = {
-                                "name": asset_data.get("asset_name", "New Asset"),
+                                "name": asset_name or "New Asset",
                                 "type": asset_type,
                                 "currency": currency,
                                 "current_value": asset_data.get("current_value", 0),
@@ -1026,20 +1078,22 @@ When analyzing expenses:
                                     if verify_response.data and len(verify_response.data) > 0:
                                         # Build success message without asset ID
                                         asset_name = asset_create_data.get('name', 'asset')
+                                        owner_info = ""
+                                        if family_member_id:
+                                            # Get family member name
+                                            try:
+                                                fm_response = supabase_service.table("family_members").select("name").eq("id", family_member_id).execute()
+                                                if fm_response.data:
+                                                    owner_info = f" for {fm_response.data[0].get('name')}"
+                                            except:
+                                                pass
+                                        else:
+                                            owner_info = " for you (Self)"
+                                        
                                         if asset_type == "stock":
-                                            owner_info = ""
-                                            if family_member_id:
-                                                # Get family member name
-                                                try:
-                                                    fm_response = supabase_service.table("family_members").select("name").eq("id", family_member_id).execute()
-                                                    if fm_response.data:
-                                                        owner_info = f" for {fm_response.data[0].get('name')}"
-                                                except:
-                                                    pass
-                                            else:
-                                                owner_info = " for you (Self)"
-                                            
                                             llm_response = f"✅ Successfully added {asset_name} stock{owner_info} to your portfolio.{family_member_not_found_message}"
+                                        elif asset_type == "bank_account":
+                                            llm_response = f"✅ Successfully added {asset_name} bank account{owner_info} to your portfolio.{family_member_not_found_message}"
                                         else:
                                             llm_response = f"✅ Successfully added {asset_type} asset: {asset_name} to your portfolio.{family_member_not_found_message}"
                                     else:
@@ -1097,6 +1151,63 @@ When analyzing expenses:
                                 if not asset_response.data:
                                     llm_response = f"❌ Asset with ID {asset_id} not found or you don't have permission to update it."
                                 else:
+                                    # Get asset type first
+                                    asset_type = asset_response.data[0].get("type")
+                                    
+                                    # Handle family member matching for updates (stocks and bank accounts)
+                                    family_member_id = None
+                                    if asset_data.get("family_member_name") and asset_type in ["stock", "bank_account"]:
+                                        family_member_name_provided = asset_data.get("family_member_name", "").strip().lower()
+                                        
+                                        # Normalize: "self", "me", "myself" -> None (user themselves)
+                                        if family_member_name_provided in ["self", "me", "myself", ""]:
+                                            family_member_id = None
+                                            print(f"DEBUG: Update - Setting family_member_id to None for 'self'")
+                                        else:
+                                            # Fetch family members and match by name
+                                            try:
+                                                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                                                family_members_list = family_members_response.data if family_members_response.data else []
+                                                
+                                                # Try to find matching family member (prioritize exact match, then partial match)
+                                                matched_member = None
+                                                # First, try exact match (case-insensitive)
+                                                for member in family_members_list:
+                                                    member_name = member.get("name", "").lower()
+                                                    if member_name == family_member_name_provided:
+                                                        matched_member = member
+                                                        print(f"DEBUG: Update - Exact match found for family member: {member.get('name')}")
+                                                        break
+                                                
+                                                # If no exact match, try partial match (but be more strict)
+                                                if not matched_member:
+                                                    for member in family_members_list:
+                                                        member_name = member.get("name", "").lower()
+                                                        # Only match if the provided name is a complete word/phrase in the member name
+                                                        # Check if provided name matches the last word of the member name
+                                                        member_name_parts = member_name.split()
+                                                        if len(member_name_parts) > 1 and family_member_name_provided == member_name_parts[-1]:
+                                                            # Last name match (e.g., "krishnan" matches "bharadwaj krishnan")
+                                                            matched_member = member
+                                                            print(f"DEBUG: Update - Last name match found for family member: {member.get('name')}")
+                                                            break
+                                                        elif family_member_name_provided in member_name and len(family_member_name_provided) >= 4:
+                                                            # Partial match only if the provided name is at least 4 characters (to avoid false matches)
+                                                            matched_member = member
+                                                            print(f"DEBUG: Update - Partial match found for family member: {member.get('name')}")
+                                                            break
+                                                
+                                                if matched_member:
+                                                    family_member_id = matched_member.get("id")
+                                                    print(f"DEBUG: Update - Matched family member: {matched_member.get('name')} (ID: {family_member_id})")
+                                                else:
+                                                    # Family member not found - default to self but note it
+                                                    family_member_id = None
+                                                    print(f"DEBUG: Update - Family member '{family_member_name_provided}' not found, defaulting to self")
+                                            except Exception as e:
+                                                print(f"DEBUG: Update - Error fetching family members: {e}")
+                                                family_member_id = None
+                                    
                                     # Build update data
                                     update_data = {}
                                     if asset_data.get("asset_name"):
@@ -1108,8 +1219,12 @@ When analyzing expenses:
                                     if asset_data.get("notes") is not None:
                                         update_data["notes"] = asset_data.get("notes")
                                     
+                                    # Add family_member_id if it was provided/calculated (for stocks and bank accounts)
+                                    if asset_data.get("family_member_name") and asset_type in ["stock", "bank_account"]:
+                                        update_data["family_member_id"] = family_member_id
+                                        print(f"DEBUG: Update - Adding family_member_id to update_data: {family_member_id}")
+                                    
                                     # Add type-specific update fields
-                                    asset_type = asset_response.data[0].get("type")
                                     if asset_type == "stock":
                                         if asset_data.get("quantity") is not None:
                                             update_data["quantity"] = str(asset_data.get("quantity"))
