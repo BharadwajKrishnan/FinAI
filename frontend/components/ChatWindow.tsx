@@ -12,7 +12,7 @@ interface Message {
 
 interface ChatWindowProps {
   context?: "assets" | "expenses"; // Context to determine which system prompt to use
-  onAssetCreated?: () => void; // Callback to refresh assets when a new asset is created
+  onAssetCreated?: () => void; // Callback to refresh assets when an asset is created, updated, or deleted
 }
 
 export default function ChatWindow({ context = "assets", onAssetCreated }: ChatWindowProps) {
@@ -191,22 +191,28 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
 
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Check if an asset was successfully created and trigger refresh
+      // Check if an asset was successfully created, updated, or deleted and trigger refresh
       if (context === "assets" && onAssetCreated) {
         const responseText = data.response?.toLowerCase() || "";
-        // Check for success indicators in the response
+        // Check for success indicators in the response (create, update, delete)
         const successIndicators = [
           "successfully created",
           "successfully added",
+          "successfully updated",
+          "successfully deleted",
           "asset has been added",
           "asset has been created",
+          "asset has been updated",
+          "asset has been deleted",
           "added to your portfolio",
           "created asset",
           "added a new",
+          "updated asset",
+          "deleted asset",
         ];
         
         if (successIndicators.some(indicator => responseText.includes(indicator))) {
-          console.log("Asset creation detected, triggering refresh...");
+          console.log("Asset operation (create/update/delete) detected, triggering refresh...");
           // Small delay to ensure database is updated
           setTimeout(() => {
             onAssetCreated();

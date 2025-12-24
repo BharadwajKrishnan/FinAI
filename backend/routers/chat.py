@@ -616,6 +616,21 @@ When analyzing expenses:
                     except Exception as history_error:
                         print(f"Warning: Could not fetch conversation history: {history_error}")
                 
+                # Add family members to portfolio_data for LLM context
+                if portfolio_data and "family_members" not in portfolio_data:
+                    try:
+                        family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                        family_members_list = family_members_response.data if family_members_response.data else []
+                        # Add family members info to portfolio_data
+                        portfolio_data["family_members"] = [
+                            {"id": str(fm.get("id")), "name": fm.get("name"), "relationship": fm.get("relationship")}
+                            for fm in family_members_list
+                        ]
+                        print(f"Added {len(family_members_list)} family members to portfolio_data for LLM context")
+                    except Exception as e:
+                        print(f"Warning: Could not fetch family members for LLM context: {e}")
+                        portfolio_data["family_members"] = []
+                
                 asset_command_result = await asset_llm_service.process_asset_command(
                     user_message=request.message,
                     user_id=user_id,
@@ -709,6 +724,8 @@ When analyzing expenses:
                                     missing_fields.append("purchase price")
                                 if not asset_data.get("purchase_date"):
                                     missing_fields.append("purchase date")
+                                if not asset_data.get("family_member_name"):
+                                    missing_fields.append("stock owner (family member name or 'self')")
                             
                             if missing_fields:
                                 error_msg = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_fields)}."
@@ -733,13 +750,52 @@ When analyzing expenses:
                                     message_id=message_id
                                 )
                             
+                            # Handle family member matching for stocks
+                            family_member_id = None
+                            family_member_name_provided = asset_data.get("family_member_name", "").strip().lower()
+                            family_member_not_found_message = ""
+                            
+                            if asset_type == "stock":
+                                if family_member_name_provided:
+                                    # Normalize: "self", "me", "myself" -> None (user themselves)
+                                    if family_member_name_provided in ["self", "me", "myself", ""]:
+                                        family_member_id = None
+                                    else:
+                                        # Fetch family members and match by name
+                                        try:
+                                            family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                                            family_members_list = family_members_response.data if family_members_response.data else []
+                                            
+                                            # Try to find matching family member (case-insensitive, partial match)
+                                            matched_member = None
+                                            for member in family_members_list:
+                                                member_name = member.get("name", "").lower()
+                                                if family_member_name_provided in member_name or member_name in family_member_name_provided:
+                                                    matched_member = member
+                                                    break
+                                            
+                                            if matched_member:
+                                                family_member_id = matched_member.get("id")
+                                                print(f"Matched family member: {matched_member.get('name')} (ID: {family_member_id})")
+                                            else:
+                                                # Family member not found - default to self but note it
+                                                family_member_id = None
+                                                family_member_not_found_message = f" Note: The family member '{asset_data.get('family_member_name')}' is not yet added in your Profile. The stock has been assigned to you (Self). Please add this family member in the Profile section if you want to assign assets to them in the future."
+                                                print(f"Family member '{family_member_name_provided}' not found, defaulting to self")
+                                        except Exception as e:
+                                            print(f"Error fetching family members: {e}")
+                                            family_member_id = None
+                                else:
+                                    # No family member name provided - default to self
+                                    family_member_id = None
+                            
                             asset_create_data = {
                                 "name": asset_data.get("asset_name", "New Asset"),
                                 "type": asset_type,
                                 "currency": currency,
                                 "current_value": asset_data.get("current_value", 0),
                                 "notes": asset_data.get("notes"),
-                                "family_member_id": asset_data.get("family_member_id"),
+                                "family_member_id": family_member_id,
                             }
                             
                             # asset_type already set above
@@ -906,7 +962,24 @@ When analyzing expenses:
                                     # Verify the asset was actually created by querying it back
                                     verify_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
                                     if verify_response.data and len(verify_response.data) > 0:
-                                        llm_response = f"✅ Successfully added {asset_type} asset: {asset_create_data.get('name')}. Asset ID: {asset_id}"
+                                        # Build success message without asset ID
+                                        asset_name = asset_create_data.get('name', 'asset')
+                                        if asset_type == "stock":
+                                            owner_info = ""
+                                            if family_member_id:
+                                                # Get family member name
+                                                try:
+                                                    fm_response = supabase_service.table("family_members").select("name").eq("id", family_member_id).execute()
+                                                    if fm_response.data:
+                                                        owner_info = f" for {fm_response.data[0].get('name')}"
+                                                except:
+                                                    pass
+                                            else:
+                                                owner_info = " for you (Self)"
+                                            
+                                            llm_response = f"✅ Successfully added {asset_name} stock{owner_info} to your portfolio.{family_member_not_found_message}"
+                                        else:
+                                            llm_response = f"✅ Successfully added {asset_type} asset: {asset_name} to your portfolio.{family_member_not_found_message}"
                                     else:
                                         error_msg = "Asset was inserted but could not be verified"
                                         print(f"ERROR: {error_msg}")

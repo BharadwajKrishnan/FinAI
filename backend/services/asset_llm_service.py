@@ -18,12 +18,21 @@ class AssetLLMService:
     def __init__(self):
         self.provider = os.getenv("LLM_PROVIDER", "gemini").lower()
     
-    def _extract_info_from_message(self, user_message: str, args: Dict) -> Dict:
+    def _extract_info_from_message(self, user_message: str, args: Dict, conversation_history: Optional[List[Dict]] = None, portfolio_data: Optional[Dict] = None) -> Dict:
         """Post-process to extract information that LLM might have missed"""
         import re
         from datetime import datetime, date
         
         user_lower = user_message.lower()
+        
+        # Build combined text from conversation history for better extraction
+        combined_text = user_message
+        if conversation_history:
+            # Get all user messages from history
+            for msg in conversation_history:
+                if msg.get("role") == "user":
+                    combined_text += " " + msg.get("content", "")
+        combined_text_lower = combined_text.lower()
         
         # Extract quantity if missing
         if not args.get('quantity'):
@@ -105,14 +114,66 @@ class AssetLLMService:
                     print(f"DEBUG: Extracted stock_symbol and market from message: {symbol}, india")
                     break
         
-        # Extract market from currency mentions if missing
+        # Extract market from currency mentions if missing - check combined text
         if not args.get('market'):
-            if 'rupee' in user_lower or '₹' in user_message or 'inr' in user_lower:
+            # Check for explicit market mentions in combined text
+            if 'indian market' in combined_text_lower or 'india market' in combined_text_lower:
+                args['market'] = 'india'
+                print(f"DEBUG: Extracted market from explicit mention: india")
+            elif 'european market' in combined_text_lower or 'europe market' in combined_text_lower:
+                args['market'] = 'europe'
+                print(f"DEBUG: Extracted market from explicit mention: europe")
+            elif 'rupee' in combined_text_lower or '₹' in combined_text or 'inr' in combined_text_lower:
                 args['market'] = 'india'
                 print(f"DEBUG: Extracted market from currency: india")
-            elif 'euro' in user_lower or '€' in user_message or 'eur' in user_lower:
+            elif 'euro' in combined_text_lower or '€' in combined_text or 'eur' in combined_text_lower:
                 args['market'] = 'europe'
                 print(f"DEBUG: Extracted market from currency: europe")
+        
+        # Extract family_member_name if missing - check notes, other fields, and conversation
+        if not args.get('family_member_name') and args.get('asset_type') == 'stock':
+            # Check if LLM put it in notes or other fields
+            notes = args.get('notes', '').lower()
+            bank_name = args.get('bank_name', '').lower()  # Sometimes LLM puts it here incorrectly
+            
+            family_member_found = False
+            
+            # Check for "self", "me", "myself" in combined text
+            if ' by self' in combined_text_lower or 'for self' in combined_text_lower or 'for me' in combined_text_lower or 'myself' in combined_text_lower or 'purchased by self' in combined_text_lower:
+                args['family_member_name'] = 'self'
+                print(f"DEBUG: Extracted family_member_name='self' from conversation")
+                family_member_found = True
+            
+            # Check for family member names in combined text (case-insensitive)
+            if not family_member_found:
+                # Get available family members from portfolio_data
+                family_members_list = []
+                if portfolio_data and "family_members" in portfolio_data:
+                    family_members_list = portfolio_data.get("family_members", [])
+                
+                # Check for each family member name in the conversation
+                for fm in family_members_list:
+                    fm_name = fm.get("name", "").lower()
+                    if fm_name and fm_name in combined_text_lower:
+                        args['family_member_name'] = fm.get("name")  # Use original case
+                        print(f"DEBUG: Extracted family_member_name='{fm.get('name')}' from conversation")
+                        family_member_found = True
+                        break
+            
+            # If not found in conversation, check notes for family member mentions
+            if not family_member_found and 'natesh' in notes:
+                args['family_member_name'] = 'Natesh'
+                print(f"DEBUG: Extracted family_member_name='Natesh' from notes")
+                family_member_found = True
+            
+            # Check if bank_name was incorrectly used (LLM sometimes puts family member name there)
+            if not family_member_found and bank_name and bank_name not in ['savings', 'checking', 'current'] and len(bank_name) > 2:
+                # Might be a family member name
+                args['family_member_name'] = args.get('bank_name')
+                print(f"DEBUG: Extracted family_member_name from bank_name field: {args.get('bank_name')}")
+                # Remove it from bank_name
+                if args.get('asset_type') == 'stock':
+                    args.pop('bank_name', None)
         
         return args
     
@@ -200,13 +261,9 @@ class AssetLLMService:
         """
         Process asset command using Gemini LLM
         """
-        # Check if this is a follow-up to an incomplete request
-        incomplete_request = self._extract_incomplete_request_from_history(conversation_history)
-        if incomplete_request:
-            # Combine the original message with the new message
-            combined_message = f"{incomplete_request['original_message']}. {user_message}"
-            print(f"DEBUG: Detected follow-up message. Combined message: {combined_message[:200]}")
-            user_message = combined_message
+        # Note: We no longer combine messages here - instead we pass full conversation history to LLM
+        # This allows the LLM to extract information from all messages in the conversation
+        # The conversation_history will be included in the prompt so LLM can see all context
         
         try:
             from google import genai
@@ -255,6 +312,25 @@ class AssetLLMService:
                 
                 portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
                 asset_list_json = json.dumps(asset_list, indent=2, default=str)
+                
+                # Extract family members from portfolio data if available
+                family_members_info = ""
+                if portfolio_data and "family_members" in portfolio_data:
+                    family_members_list = portfolio_data.get("family_members", [])
+                    if family_members_list:
+                        family_members_names = [fm.get("name", "") for fm in family_members_list]
+                family_members_info = f"""
+AVAILABLE FAMILY MEMBERS (for stock owner):
+{json.dumps(family_members_list, indent=2, default=str)}
+
+Family Member Names: {', '.join(family_members_names) if family_members_names else 'None'}
+
+IMPORTANT: 
+- Use one of the family member names above (e.g., "{family_members_names[0] if family_members_names else 'John'}") if the stock belongs to that family member
+- Use "self" or "me" if the asset belongs to the user themselves
+- The family_member_name field is REQUIRED for stocks
+"""
+                
                 portfolio_context = f"""
 Current Portfolio (Full Details):
 ```json
@@ -265,6 +341,14 @@ Asset List (for ID matching):
 ```json
 {asset_list_json}
 ```
+
+{family_members_info}
+
+AVAILABLE MARKETS:
+- "india" (currency: INR, ₹, rupees) - for Indian stocks and assets
+- "europe" (currency: EUR, €, euros) - for European stocks and assets
+
+IMPORTANT: The market field is REQUIRED and must be either "india" or "europe".
 
 When the user wants to delete or update an asset, you MUST find the matching asset ID from the Asset List above. Match assets by:
 - Name (exact or partial match)
@@ -277,18 +361,39 @@ When the user wants to delete or update an asset, you MUST find the matching ass
 If you cannot find a matching asset, set action to "none" and explain that the asset was not found.
 """
             
+            # Build conversation history context if available
+            conversation_context = ""
+            if conversation_history and len(conversation_history) > 0:
+                # Get recent conversation (last 20 messages) for context - enough to see full multi-turn conversations
+                recent_messages = conversation_history[-20:] if len(conversation_history) > 20 else conversation_history
+                conversation_context = "\n\n=== CONVERSATION HISTORY (READ ALL MESSAGES BELOW) ===\n"
+                for i, msg in enumerate(recent_messages, 1):
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if role == "user":
+                        conversation_context += f"[Message {i}] User: {content}\n"
+                    elif role == "assistant":
+                        conversation_context += f"[Message {i}] Assistant: {content}\n"
+                conversation_context += "\n=== END CONVERSATION HISTORY ===\n\n"
+                conversation_context += "CRITICAL INSTRUCTION: You MUST extract information from ALL messages in the conversation history above, not just the current/last message. "
+                conversation_context += "If the user mentioned quantity in message 1, stock name in message 2, and price in message 3, you MUST combine all of them. "
+                conversation_context += "Only ask for information that is truly missing from ALL messages in the conversation.\n"
+            
             prompt = f"""You are a financial assistant that helps users manage their assets through natural language commands.
 
 {portfolio_context}
+{conversation_context}
 
-Analyze the user's message and determine if they want to:
+Analyze the user's message and the conversation history above to determine if they want to:
 1. ADD a new asset (e.g., "Add 10 shares of AAPL", "Create a bank account", "I bought 5 units of XYZ mutual fund")
 2. DELETE an asset (e.g., "Remove my AAPL stock", "Delete the savings account", "Remove asset with ID abc123")
 3. UPDATE an asset (e.g., "Update my AAPL quantity to 20", "Change the balance of my savings account to 5000")
 4. NONE - if the message is just a question, not about asset management, OR if critical information is missing
 
 CRITICAL RULES - EXTRACT INFORMATION THAT IS PRESENT:
-- EXTRACT all information that is explicitly mentioned in the user's message. Do not ask for information that is already provided.
+- EXTRACT all information that is explicitly mentioned in the user's message OR in the conversation history above. Do not ask for information that is already provided in ANY part of the conversation.
+- Look through the ENTIRE conversation history to find all relevant information before asking for missing details.
+- If information was mentioned in a previous message, use it - don't ask for it again.
 - For stock names like "Reliance", "TCS", "Infosys", "HDFC", "ICICI", "SBI" - these are Indian companies, so market should be "india". Extract the stock name as stock_symbol (e.g., "RELIANCE" for "Reliance", "TCS" for "TCS").
 - For US stocks like "AAPL", "GOOGL", "MSFT" - these are US companies. Since we only support India and Europe markets, if the user mentions these, ask which market they want (India or Europe), or infer from currency if mentioned.
 - Convert dates from any format (DD.MM.YYYY, DD-MM-YYYY, etc.) to YYYY-MM-DD format. For example, "24.11.2025" becomes "2025-11-24", "24-11-2025" becomes "2025-11-24".
@@ -301,33 +406,41 @@ CRITICAL RULES - EXTRACT INFORMATION THAT IS PRESENT:
 - DO NOT proceed with action "add" if ANY required field is missing. You MUST set action to "none" and ask for the missing information.
 - For DELETE and UPDATE operations, you MUST provide the asset_id from the portfolio data. If you cannot find a matching asset, set action to "none" and ask the user to clarify which asset they mean.
 
-For ADD operations, EXTRACT all information from the user's message:
+For ADD operations, EXTRACT all information from the ENTIRE conversation history (all messages above), not just the current message:
 
 REQUIRED FIELDS BY ASSET TYPE:
-- Stock: asset_name, stock_symbol, quantity, purchase_price, purchase_date, market
+- Stock: asset_name, stock_symbol, quantity, purchase_price, purchase_date, market, family_member_name (name of the stock owner - must be one of the family members, or "self" for the user)
 - Mutual Fund: asset_name, mutual_fund_code, units, market
 - Bank Account: asset_name, bank_name, account_type, current_value, market
 - Fixed Deposit: asset_name, principal_amount, fd_interest_rate, start_date, maturity_date, market
 - Insurance Policy: asset_name, policy_number, amount_insured, issue_date, date_of_maturity, premium, market
 - Commodity: asset_name, commodity_name, form, commodity_quantity, commodity_units, commodity_purchase_date, commodity_purchase_price, market
 
-EXTRACTION RULES:
-- Extract stock names from the message (e.g., "Reliance" → stock_symbol: "RELIANCE", asset_name: "Reliance Industries")
-- Extract quantities (e.g., "100 shares" → quantity: 100)
-- Extract prices (e.g., "at 1550" or "for 1500 rupees" → purchase_price: 1550 or 1500)
-- Extract dates and convert to YYYY-MM-DD format (e.g., "24.11.2025" → "2025-11-24", "24-11-2025" → "2025-11-24")
-- Infer market from context:
+IMPORTANT FOR STOCKS:
+- family_member_name is REQUIRED. It must be the name of a family member from the portfolio, or "self" if the stock belongs to the user.
+- If the user mentions a family member name that is not in the portfolio, you should still extract it, but note that it needs to be added in the Profile.
+- Extract family member names from phrases like "for my brother", "for John", "for my father", "for self", "for me", etc.
+
+EXTRACTION RULES (APPLY TO ALL MESSAGES IN CONVERSATION HISTORY):
+- Extract stock names from ANY message in the conversation (e.g., "Reliance" → stock_symbol: "RELIANCE", asset_name: "Reliance Industries")
+- Extract quantities from ANY message (e.g., "100 shares" → quantity: 100)
+- Extract prices from ANY message (e.g., "at 1550" or "for 1500 rupees" → purchase_price: 1550 or 1500)
+- Extract dates from ANY message and convert to YYYY-MM-DD format (e.g., "24.11.2025" → "2025-11-24", "24-12-2025" → "2025-12-24")
+- Extract family member names from ANY message (e.g., "for my brother", "Natesh purchased", "for John" → family_member_name)
+- Infer market from ANY message in the conversation:
   * Indian stock names (Reliance, TCS, Infosys, HDFC, ICICI, SBI, etc.) → market: "india"
-  * Mentions of "rupees", "₹", "INR" → market: "india"
-  * Mentions of "euros", "€", "EUR" → market: "europe"
-  * If truly ambiguous, ask the user
+  * Mentions of "rupees", "₹", "INR", "Indian market" → market: "india"
+  * Mentions of "euros", "€", "EUR", "European market" → market: "europe"
+  * If truly ambiguous across ALL messages, ask the user
 
 IMPORTANT:
 - Market must be either "india" or "europe" (not currency codes like INR, EUR, USD)
 - Convert dates from any format (DD.MM.YYYY, DD-MM-YYYY, etc.) to YYYY-MM-DD format
 - Only set action to "none" if information is TRULY missing and cannot be extracted or inferred from context
 
-User message: {user_message}
+Current user message (latest): {user_message}
+
+Remember: Extract information from ALL messages in the conversation history above, not just this current message!
 
 CRITICAL: You MUST respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations - just the raw JSON.
 
@@ -340,7 +453,8 @@ If all information is present, return:
   "quantity": 100,
   "purchase_price": 1550,
   "purchase_date": "2025-11-24",
-  "market": "india"
+  "market": "india",
+  "family_member_name": "self" or "John" or "brother" (name of the stock owner)
 }}
 
 If information is missing, return:
@@ -379,6 +493,8 @@ Respond with ONLY the JSON object."""
                             "account_type": types.Schema(type=types.Type.STRING, enum=["savings", "checking", "current"]),
                             "current_value": types.Schema(type=types.Type.NUMBER),
                             "notes": types.Schema(type=types.Type.STRING),
+                            "family_member_name": types.Schema(type=types.Type.STRING),
+                            "market": types.Schema(type=types.Type.STRING, enum=["india", "europe"]),
                         }
                     )
                 )
@@ -458,7 +574,7 @@ Respond with ONLY the JSON object."""
             # Post-process to extract information that LLM might have missed
             # Run post-processing if action is 'add' or if LLM returned 'none' but we have asset_type (might be extractable)
             if action == 'add' or (action == 'none' and args.get('asset_type')):
-                args = self._extract_info_from_message(user_message, args)
+                args = self._extract_info_from_message(user_message, args, conversation_history, portfolio_data)
                 print(f"DEBUG: After post-processing, args keys: {list(args.keys())}")
                 # If we extracted information and now have asset_type, try to proceed
                 if action == 'none' and args.get('asset_type'):
@@ -490,6 +606,8 @@ Respond with ONLY the JSON object."""
                         missing_fields.append('purchase price')
                     if not args.get('purchase_date'):
                         missing_fields.append('purchase date')
+                    if not args.get('family_member_name'):
+                        missing_fields.append('stock owner (family member name or "self")')
                 elif asset_type == 'mutual_fund':
                     if not args.get('asset_name'):
                         missing_fields.append('asset name')
