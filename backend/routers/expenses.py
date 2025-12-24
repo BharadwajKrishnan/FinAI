@@ -47,7 +47,6 @@ async def get_expenses(
                 end_month = date(year, month + 1, 1)
             start_str = start_month.isoformat()
             end_str = end_month.isoformat()
-            print(f"Filtering expenses: year={year}, month={month}, start_date={start_str}, end_date={end_str}")
             query = query.gte("expense_date", start_str)
             query = query.lt("expense_date", end_str)
         elif year:
@@ -63,24 +62,16 @@ async def get_expenses(
         query = query.order("expense_date", desc=True)
         
         # Debug: Log the query before execution
-        print(f"Executing query for user_id={user_id}, year={year}, month={month}")
         
         try:
             response = query.execute()
             expenses = response.data if response.data else []
             
-            # Debug logging
-            print(f"Expenses query - year={year}, month={month}, category={category}")
-            print(f"Found {len(expenses)} expenses matching filters")
-            if len(expenses) > 0:
-                print(f"Sample expense date: {expenses[0].get('expense_date')}")
             else:
                 # If no expenses found, try fetching all expenses for this user to debug
                 all_expenses_query = supabase_client.table("expenses").select("*").eq("user_id", user_id).execute()
                 all_expenses = all_expenses_query.data if all_expenses_query.data else []
-                print(f"DEBUG: Total expenses for user: {len(all_expenses)}")
                 if len(all_expenses) > 0:
-                    print(f"DEBUG: Sample expense dates: {[e.get('expense_date') for e in all_expenses[:5]]}")
             
             return expenses
         except Exception as query_error:
@@ -184,7 +175,6 @@ async def create_expense(
         else:
             expense_data["family_member_id"] = str(expense_data["family_member_id"])
         
-        print(f"Creating expense with family_member_id: {expense_data.get('family_member_id')}")
         
         # Try using service role client first (bypasses RLS)
         # If that fails due to RLS, fall back to user token-based client
@@ -194,7 +184,6 @@ async def create_expense(
             error_msg = str(rls_error)
             if "row-level security" in error_msg.lower() or "42501" in error_msg:
                 # RLS is blocking - fall back to using user's token
-                print(f"Service role failed, falling back to user token for expense creation")
                 try:
                     # Use client with user's access token so RLS can identify the user
                     user_client = get_supabase_client_with_token(access_token)
@@ -262,7 +251,6 @@ async def update_expense(
             else:
                 update_data["family_member_id"] = str(update_data["family_member_id"])
         
-        print(f"Updating expense with family_member_id: {update_data.get('family_member_id')}")
         
         # Try service role first, fall back to user token if RLS blocks
         try:

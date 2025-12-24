@@ -212,7 +212,6 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
         ];
         
         if (successIndicators.some(indicator => responseText.includes(indicator))) {
-          console.log("Asset operation (create/update/delete) detected, triggering refresh...");
           // Small delay to ensure database is updated
           setTimeout(() => {
             onAssetCreated();

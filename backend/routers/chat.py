@@ -70,21 +70,15 @@ async def chat(
         else:
             context = str(context_value).lower().strip()  # Normalize to lowercase and strip whitespace
         
-        print(f"Chat context received from request: '{request.context}' (type: {type(request.context)})")
-        print(f"Chat context being used: '{context}' (type: {type(context)})")
-        print(f"Context comparison - context == 'expenses': {context == 'expenses'}")
-        print(f"Context comparison - context == 'assets': {context == 'assets'}")
         
         # Fetch user's portfolio from database (only if context is "assets")
         portfolio_data = {}
         if context == "assets":
             try:
-                print(f"Fetching portfolio for user_id: {user_id}")
                 
                 # Fetch family members first
                 family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
                 family_members = {str(member["id"]): member for member in (family_members_response.data if family_members_response.data else [])}
-                print(f"Found {len(family_members)} family members for user {user_id}")
                 
                 # Use service role client (bypasses RLS, user already validated via get_current_user)
                 # This avoids JWT expiration issues
@@ -98,9 +92,7 @@ async def chat(
                 # Filter by is_active - include assets where is_active is True or NULL (NULL treated as active)
                 assets = [a for a in all_assets if a.get("is_active") is True or a.get("is_active") is None]
                 
-                print(f"Found {len(assets)} assets for user {user_id} (out of {len(all_assets)} total)")
                 if len(assets) > 0:
-                    print(f"Sample asset: {json.dumps(assets[0], indent=2, default=str)}")
                 
                 # Organize assets by market (currency) and then by type
                 # Also organize by family member for better context
@@ -238,22 +230,17 @@ async def chat(
                     portfolio_data[market]["by_family_member"] = family_member_assets
                     
                     # Print summary by family member
-                    print(f"Portfolio by family member for {market}:")
                     for member_name, assets_by_type in family_member_assets.items():
                         total_assets = sum(len(assets_by_type[at]) for at in ["stocks", "mutual_funds", "bank_accounts", "fixed_deposits", "insurance_policies", "commodities"])
-                        print(f"  {member_name}: {total_assets} assets")
                 
                 # Add family members list to portfolio_data for system prompt
                 portfolio_data["family_members"] = [
                     {"id": str(fm.get("id")), "name": fm.get("name"), "relationship": fm.get("relationship")}
                     for fm in family_members.values()
                 ]
-                print(f"Added {len(portfolio_data['family_members'])} family members to portfolio_data for system prompt")
             except Exception as portfolio_error:
                 # If portfolio fetch fails, continue without portfolio data
                 import traceback
-                print(f"Warning: Could not fetch portfolio data: {str(portfolio_error)}")
-                print(f"Traceback: {traceback.format_exc()}")
                 portfolio_data = {
                     "india": {
                         "currency": "INR",
@@ -285,21 +272,17 @@ async def chat(
                 # Fetch family members first
                 family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
                 family_members = {str(member["id"]): member for member in (family_members_response.data if family_members_response.data else [])}
-                print(f"Found {len(family_members)} family members for user {user_id}")
                 
                 # Use service role client (bypasses RLS, user already validated via get_current_user)
                 # This avoids JWT expiration issues
-                print(f"Fetching expenses for user_id: {user_id}")
                 expenses_response = supabase_service.table("expenses").select("*").eq("user_id", user_id).order("expense_date", desc=True).execute()
                 expenses = expenses_response.data if expenses_response.data else []
                 
-                print(f"Found {len(expenses)} expenses for user {user_id}")
                 
                 # Limit expenses to most recent 500 to avoid prompt size issues
                 # This prevents rate limiting from very large prompts
                 max_expenses = 500
                 if len(expenses) > max_expenses:
-                    print(f"Limiting expenses from {len(expenses)} to {max_expenses} most recent for LLM context")
                     expenses = expenses[:max_expenses]
                 
                 # Format expenses for LLM context
@@ -344,30 +327,21 @@ async def chat(
                         expenses_by_family_member[family_member_name] = []
                     expenses_by_family_member[family_member_name].append(expense)
                 
-                print(f"Expenses grouped by currency: {list(expenses_by_currency.keys())}")
                 for currency, exp_list in expenses_by_currency.items():
                     total = sum(e.get("amount", 0) for e in exp_list)
-                    print(f"  {currency}: {len(exp_list)} expenses, total: {total}")
                 
-                print(f"Expenses grouped by family member: {list(expenses_by_family_member.keys())}")
                 for member_name, exp_list in expenses_by_family_member.items():
                     total = sum(e.get("amount", 0) for e in exp_list)
-                    print(f"  {member_name}: {len(exp_list)} expenses, total: {total}")
                     
             except Exception as expenses_error:
                 # If expenses fetch fails, continue without expense data
                 import traceback
-                print(f"Warning: Could not fetch expense data: {str(expenses_error)}")
-                print(f"Traceback: {traceback.format_exc()}")
                 expenses_data = []
         
         # Convert portfolio to JSON string (only if context is "assets")
         portfolio_json = ""
         if context == "assets":
             portfolio_json = json.dumps(portfolio_data, indent=2, default=str)
-            print(f"Portfolio JSON length: {len(portfolio_json)} characters")
-            print(f"Portfolio summary - India: {len(portfolio_data['india']['stocks'])} stocks, {len(portfolio_data['india']['mutual_funds'])} mutual funds, {len(portfolio_data['india']['bank_accounts'])} bank accounts, {len(portfolio_data['india']['fixed_deposits'])} fixed deposits, {len(portfolio_data['india']['insurance_policies'])} insurance policies, {len(portfolio_data['india']['commodities'])} commodities")
-            print(f"Portfolio summary - Europe: {len(portfolio_data['europe']['stocks'])} stocks, {len(portfolio_data['europe']['mutual_funds'])} mutual funds, {len(portfolio_data['europe']['bank_accounts'])} bank accounts, {len(portfolio_data['europe']['fixed_deposits'])} fixed deposits, {len(portfolio_data['europe']['insurance_policies'])} insurance policies, {len(portfolio_data['europe']['commodities'])} commodities")
         
         # Convert expenses to JSON string (only if context is "expenses")
         expenses_json = ""
@@ -386,11 +360,8 @@ async def chat(
             }
             
             expenses_json = json.dumps(expenses_data_with_grouping, indent=2, default=str)
-            print(f"Expenses JSON length: {len(expenses_json)} characters")
-            print(f"Number of expenses in JSON: {len(expenses_data)}")
             # If expenses JSON is very large (>50KB), log a warning
             if len(expenses_json) > 50000:
-                print(f"WARNING: Expenses JSON is very large ({len(expenses_json)} chars). This might cause rate limiting issues.")
         
         # Get current message order (max message_order + 1 for this user and context)
         try:
@@ -400,9 +371,7 @@ async def chat(
             else:
                 current_order = 0
         except Exception as e:
-            print(f"Warning: Could not get max message order: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             current_order = 0
         
         # Save user message to database
@@ -415,12 +384,9 @@ async def chat(
                 "context": context  # Store context with message
             }
             insert_response = supabase_service.table("chat_messages").insert(user_message_data).execute()
-            print(f"Successfully saved user message to database. Message ID: {insert_response.data[0]['id'] if insert_response.data else 'N/A'}")
             current_order += 1
         except Exception as e:
-            print(f"ERROR: Could not save user message to database: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             # Continue even if save fails - don't break the chat flow
         
         # Convert conversation history to dict format for LLM service
@@ -432,14 +398,9 @@ async def chat(
             ]
         
         # Create system prompt based on context
-        print(f"DEBUG: About to create system prompt. Context value: '{context}', type: {type(context)}")
-        print(f"DEBUG: context == 'assets': {context == 'assets'}")
-        print(f"DEBUG: context == 'expenses': {context == 'expenses'}")
         
         if context == "assets":
             # System prompt for Financial Assets tab
-            print(f"Creating system prompt for ASSETS context...")
-            print(f"Portfolio JSON preview (first 500 chars): {portfolio_json[:500] if portfolio_json else 'No portfolio'}")
             
             # Build family members info string for the prompt
             family_members_info = ""
@@ -590,9 +551,6 @@ Remember: Your primary role is to provide financial insights and analysis. Asset
         
         elif context == "expenses":
             # System prompt for Expense Tracker tab
-            print(f"Creating system prompt for EXPENSES context...")
-            print(f"Expenses JSON preview (first 500 chars): {expenses_json[:500] if expenses_json else 'No expenses'}")
-            print(f"Number of expenses: {len(expenses_data)}")
             
             system_prompt = f"""<Role>
 You are FinAI, an intelligent expense tracking and budgeting assistant. Your purpose is to help users track their expenses, analyze spending patterns, and make informed budgeting decisions. You must always communicate clearly, accurately, and professionally while providing factual, data-based insights.
@@ -667,7 +625,6 @@ When analyzing expenses:
         # Check if this is an asset management command (only for assets context)
         if context == "assets":
             try:
-                print(f"Checking if message is an asset management command: {request.message[:100]}...")
                 # Prepare conversation history for asset command processing
                 asset_conversation_history = None
                 if request.conversation_history:
@@ -678,16 +635,13 @@ When analyzing expenses:
                 else:
                     # If conversation history not provided, fetch from database
                     try:
-                        print(f"Conversation history not in request, fetching from database...")
                         chat_history_response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).eq("context", context).order("message_order", desc=False).limit(10).execute()
                         if chat_history_response.data:
                             asset_conversation_history = [
                                 {"role": msg.get("role"), "content": msg.get("content", "")}
                                 for msg in chat_history_response.data
                             ]
-                            print(f"Fetched {len(asset_conversation_history)} messages from database for follow-up detection")
                     except Exception as history_error:
-                        print(f"Warning: Could not fetch conversation history: {history_error}")
                 
                 # Add family members to portfolio_data for LLM context
                 if portfolio_data and "family_members" not in portfolio_data:
@@ -699,9 +653,7 @@ When analyzing expenses:
                             {"id": str(fm.get("id")), "name": fm.get("name"), "relationship": fm.get("relationship")}
                             for fm in family_members_list
                         ]
-                        print(f"Added {len(family_members_list)} family members to portfolio_data for LLM context")
                     except Exception as e:
-                        print(f"Warning: Could not fetch family members for LLM context: {e}")
                         portfolio_data["family_members"] = []
                 
                 asset_command_result = await asset_llm_service.process_asset_command(
@@ -711,7 +663,6 @@ When analyzing expenses:
                     conversation_history=asset_conversation_history
                 )
                 
-                print(f"DEBUG: asset_command_result: {json.dumps(asset_command_result, indent=2, default=str)}")
                 
                 # Check if this is a request asking for missing information
                 # If so, return the response and don't continue to normal chat
@@ -720,7 +671,6 @@ When analyzing expenses:
                     # Check if the response is asking for missing information
                     if response_msg and any(keyword in response_msg.lower() for keyword in ["need", "missing", "provide", "specify", "information"]):
                         # This is asking for missing info - return it and stop
-                        print(f"DEBUG: Action is 'none' but response is asking for missing info. Returning response and stopping.")
                         try:
                             # Get current message order
                             current_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).eq("context", context).order("message_order", desc=True).limit(1).execute()
@@ -747,7 +697,6 @@ When analyzing expenses:
                         )
                     else:
                         # Not asking for missing info, continue to normal chat
-                        print(f"DEBUG: Action is 'none' and not asking for missing info, continuing with normal chat flow")
                 
                 if asset_command_result.get("action") != "none":
                     # This is an asset management command - execute it
@@ -755,9 +704,6 @@ When analyzing expenses:
                     asset_data = asset_command_result.get("asset_data", {})
                     asset_id = asset_command_result.get("asset_id")
                     
-                    print(f"Detected asset management action: {action}")
-                    print(f"DEBUG: asset_data: {json.dumps(asset_data, indent=2, default=str)}")
-                    print(f"DEBUG: asset_id: {asset_id}")
                     
                     try:
                         if action == "add":
@@ -859,7 +805,6 @@ When analyzing expenses:
                                                 member_name = member.get("name", "").lower()
                                                 if member_name == family_member_name_provided:
                                                     matched_member = member
-                                                    print(f"DEBUG: Exact match found for family member: {member.get('name')}")
                                                     break
                                             
                                             # If no exact match, try partial match (but be more strict)
@@ -873,25 +818,20 @@ When analyzing expenses:
                                                     if len(member_name_parts) > 1 and family_member_name_provided == member_name_parts[-1]:
                                                         # Last name match (e.g., "krishnan" matches "bharadwaj krishnan")
                                                         matched_member = member
-                                                        print(f"DEBUG: Last name match found for family member: {member.get('name')}")
                                                         break
                                                     elif family_member_name_provided in member_name and len(family_member_name_provided) >= 4:
                                                         # Partial match only if the provided name is at least 4 characters (to avoid false matches)
                                                         matched_member = member
-                                                        print(f"DEBUG: Partial match found for family member: {member.get('name')}")
                                                         break
                                             
                                             if matched_member:
                                                 family_member_id = matched_member.get("id")
-                                                print(f"Matched family member: {matched_member.get('name')} (ID: {family_member_id})")
                                             else:
                                                 # Family member not found - default to self but note it
                                                 family_member_id = None
                                                 asset_type_name = "stock" if asset_type == "stock" else "bank account"
                                                 family_member_not_found_message = f" Note: The family member '{asset_data.get('family_member_name')}' is not yet added in your Profile. The {asset_type_name} has been assigned to you (Self). Please add this family member in the Profile section if you want to assign assets to them in the future."
-                                                print(f"Family member '{family_member_name_provided}' not found, defaulting to self")
                                         except Exception as e:
-                                            print(f"Error fetching family members: {e}")
                                             family_member_id = None
                                 else:
                                     # No family member name provided - default to self
@@ -901,7 +841,6 @@ When analyzing expenses:
                             asset_name = asset_data.get("asset_name")
                             if asset_type == "bank_account" and not asset_name and asset_data.get("bank_name"):
                                 asset_name = asset_data.get("bank_name")
-                                print(f"DEBUG: Using bank_name as asset_name: {asset_name}")
                             
                             asset_create_data = {
                                 "name": asset_name or "New Asset",
@@ -981,7 +920,6 @@ When analyzing expenses:
                                     asset_create_data["current_value"] = float(asset_data.get("quantity", 0)) * float(asset_data.get("commodity_purchase_price", 0))
                             
                             # Create asset using the assets router logic
-                            print(f"Creating asset with data: {json.dumps(asset_create_data, indent=2, default=str)}")
                             
                             # Ensure is_active is set
                             if "is_active" not in asset_create_data:
@@ -993,20 +931,16 @@ When analyzing expenses:
                             
                             try:
                                 asset_create = AssetCreate(**asset_create_data)
-                                print(f"AssetCreate object created successfully")
                             except Exception as validation_error:
                                 print(f"Error creating AssetCreate object: {str(validation_error)}")
                                 import traceback
-                                print(f"Traceback: {traceback.format_exc()}")
                                 raise ValueError(f"Invalid asset data: {str(validation_error)}")
                             
                             try:
                                 asset_create.model_validate_asset_fields()  # Validate required fields
-                                print(f"Asset fields validated successfully")
                             except Exception as validation_error:
                                 print(f"Error validating asset fields: {str(validation_error)}")
                                 import traceback
-                                print(f"Traceback: {traceback.format_exc()}")
                                 raise ValueError(f"Asset validation failed: {str(validation_error)}")
                             
                             # Use supabase_service to create asset directly
@@ -1022,7 +956,6 @@ When analyzing expenses:
                             if "is_active" not in asset_dict:
                                 asset_dict["is_active"] = True
                             
-                            print(f"Asset dict before conversion: {json.dumps(asset_dict, indent=2, default=str)}")
                             
                             # Convert dates and decimals
                             date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
@@ -1041,28 +974,21 @@ When analyzing expenses:
                                 if field in asset_dict and asset_dict[field] is not None:
                                     asset_dict[field] = str(asset_dict[field])
                             
-                            print(f"Asset dict after conversion: {json.dumps(asset_dict, indent=2, default=str)}")
                             
                             # Insert into database
                             try:
-                                print(f"Attempting to insert asset into database with user_id: {user_id}")
                                 response = supabase_service.table("assets").insert(asset_dict).execute()
-                                print(f"Supabase insert response type: {type(response)}")
-                                print(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}")
                                 
                                 # Check response structure
                                 response_data = None
                                 if hasattr(response, 'data'):
                                     response_data = response.data
-                                    print(f"Response.data type: {type(response_data)}, value: {response_data}")
                                 elif hasattr(response, '__dict__'):
-                                    print(f"Response dict: {response.__dict__}")
                                 
                                 # Also check for errors
                                 response_error = None
                                 if hasattr(response, 'error'):
                                     response_error = response.error
-                                    print(f"Response.error: {response_error}")
                                 
                                 if response_error:
                                     error_msg = f"Supabase error: {response_error}"
@@ -1071,7 +997,6 @@ When analyzing expenses:
                                 elif response_data and isinstance(response_data, list) and len(response_data) > 0:
                                     created_asset = response_data[0]
                                     asset_id = created_asset.get('id')
-                                    print(f"Successfully created asset with ID: {asset_id}")
                                     
                                     # Verify the asset was actually created by querying it back
                                     verify_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
@@ -1103,7 +1028,6 @@ When analyzing expenses:
                                 elif response_data is None or (isinstance(response_data, list) and len(response_data) == 0):
                                     error_msg = "No data returned from Supabase insert - asset may not have been created"
                                     print(f"ERROR: {error_msg}")
-                                    print(f"Full response object: {response}")
                                     llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
                                 else:
                                     error_msg = f"Unexpected response format: {type(response_data)}"
@@ -1114,7 +1038,6 @@ When analyzing expenses:
                                 error_msg = str(insert_error)
                                 print(f"ERROR inserting asset into database: {error_msg}")
                                 import traceback
-                                print(f"Traceback: {traceback.format_exc()}")
                                 
                                 # Check for RLS errors
                                 if "row-level security" in error_msg.lower() or "42501" in error_msg:
@@ -1162,7 +1085,6 @@ When analyzing expenses:
                                         # Normalize: "self", "me", "myself" -> None (user themselves)
                                         if family_member_name_provided in ["self", "me", "myself", ""]:
                                             family_member_id = None
-                                            print(f"DEBUG: Update - Setting family_member_id to None for 'self'")
                                         else:
                                             # Fetch family members and match by name
                                             try:
@@ -1176,7 +1098,6 @@ When analyzing expenses:
                                                     member_name = member.get("name", "").lower()
                                                     if member_name == family_member_name_provided:
                                                         matched_member = member
-                                                        print(f"DEBUG: Update - Exact match found for family member: {member.get('name')}")
                                                         break
                                                 
                                                 # If no exact match, try partial match (but be more strict)
@@ -1189,23 +1110,18 @@ When analyzing expenses:
                                                         if len(member_name_parts) > 1 and family_member_name_provided == member_name_parts[-1]:
                                                             # Last name match (e.g., "krishnan" matches "bharadwaj krishnan")
                                                             matched_member = member
-                                                            print(f"DEBUG: Update - Last name match found for family member: {member.get('name')}")
                                                             break
                                                         elif family_member_name_provided in member_name and len(family_member_name_provided) >= 4:
                                                             # Partial match only if the provided name is at least 4 characters (to avoid false matches)
                                                             matched_member = member
-                                                            print(f"DEBUG: Update - Partial match found for family member: {member.get('name')}")
                                                             break
                                                 
                                                 if matched_member:
                                                     family_member_id = matched_member.get("id")
-                                                    print(f"DEBUG: Update - Matched family member: {matched_member.get('name')} (ID: {family_member_id})")
                                                 else:
                                                     # Family member not found - default to self but note it
                                                     family_member_id = None
-                                                    print(f"DEBUG: Update - Family member '{family_member_name_provided}' not found, defaulting to self")
                                             except Exception as e:
-                                                print(f"DEBUG: Update - Error fetching family members: {e}")
                                                 family_member_id = None
                                     
                                     # Build update data
@@ -1222,7 +1138,6 @@ When analyzing expenses:
                                     # Add family_member_id if it was provided/calculated (for stocks and bank accounts)
                                     if asset_data.get("family_member_name") and asset_type in ["stock", "bank_account"]:
                                         update_data["family_member_id"] = family_member_id
-                                        print(f"DEBUG: Update - Adding family_member_id to update_data: {family_member_id}")
                                     
                                     # Add type-specific update fields
                                     if asset_type == "stock":
@@ -1282,9 +1197,7 @@ When analyzing expenses:
                             }
                             insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
                             message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
-                            print(f"Successfully saved assistant message to database. Message ID: {message_id}")
                         except Exception as e:
-                            print(f"ERROR: Could not save assistant message to database: {str(e)}")
                             message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
                         
                         return ChatResponse(
@@ -1296,7 +1209,6 @@ When analyzing expenses:
                         import traceback
                         error_details = traceback.format_exc()
                         print(f"Error executing asset command: {str(exec_error)}")
-                        print(f"Traceback: {error_details}")
                         error_response = f"❌ Error executing asset operation: {str(exec_error)}. Please check the information and try again."
                         
                         # Save error response
@@ -1318,16 +1230,12 @@ When analyzing expenses:
                             message_id=message_id
                         )
                 else:
-                    print(f"DEBUG: Action is 'none', continuing with normal chat flow")
                 
                 # If action is "none", continue with normal LLM chat flow
-                print(f"Message is not an asset management command, proceeding with normal chat flow")
                 
             except Exception as asset_llm_error:
                 # If asset LLM service fails, continue with normal chat flow
                 import traceback
-                print(f"Warning: Asset LLM service error (continuing with normal chat): {str(asset_llm_error)}")
-                print(f"Traceback: {traceback.format_exc()}")
         
         # Get LLM response
         # Log prompt size for debugging
@@ -1335,7 +1243,6 @@ When analyzing expenses:
         history_length = len(history) if history else 0
         message_length = len(request.message) if request.message else 0
         total_prompt_size = system_prompt_length + message_length + (history_length * 200)  # Rough estimate
-        print(f"LLM call - Context: {context}, System prompt: {system_prompt_length} chars, Message: {message_length} chars, History: {history_length} messages, Estimated total: ~{total_prompt_size} chars")
         
         # Retry logic for rate limit errors
         max_retries = 3
@@ -1358,12 +1265,10 @@ When analyzing expenses:
                     if is_rate_limit and attempt < max_retries - 1:
                         # Exponential backoff: 2s, 4s, 8s
                         wait_time = retry_delay * (2 ** attempt)
-                        print(f"Rate limit detected in response (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time} seconds...")
                         await asyncio.sleep(wait_time)
                         continue
                     elif is_rate_limit and attempt == max_retries - 1:
                         # Max retries reached, return the error message
-                        print(f"Rate limit error persisted after {max_retries} attempts")
                         break
                 
                 # Success or non-rate-limit error, exit retry loop
@@ -1381,13 +1286,10 @@ When analyzing expenses:
                 if is_rate_limit and attempt < max_retries - 1:
                     # Exponential backoff: 2s, 4s, 8s
                     wait_time = retry_delay * (2 ** attempt)
-                    print(f"Rate limit exception on attempt {attempt + 1}/{max_retries}. Retrying in {wait_time} seconds...")
                     await asyncio.sleep(wait_time)
                     continue
                 else:
                     # Not a rate limit error, or max retries reached
-                    print(f"ERROR in LLM call for context '{context}' (attempt {attempt + 1}/{max_retries}): {error_msg}")
-                    print(f"Traceback: {error_trace}")
                     # Re-raise to let the LLM service handle it
                     raise
         
@@ -1405,11 +1307,8 @@ When analyzing expenses:
             }
             insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
             message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
-            print(f"Successfully saved assistant message to database. Message ID: {message_id}")
         except Exception as e:
-            print(f"ERROR: Could not save assistant message to database: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
         
         return ChatResponse(
@@ -1419,8 +1318,6 @@ When analyzing expenses:
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Chat endpoint error: {str(e)}")
-        print(f"Traceback: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to process chat message: {str(e)}")
 
 
@@ -1451,13 +1348,11 @@ async def get_chat_history(
         else:
             context = str(context).lower().strip()
         
-        print(f"Fetching chat history for user {user_id} with context: {context}")
         
         # Fetch chat messages from database, filtered by context and ordered by message_order
         try:
             response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).eq("context", context).order("message_order", desc=False).execute()
             messages = response.data if response.data else []
-            print(f"Successfully fetched {len(messages)} chat messages for user {user_id}")
             
             # Format messages for frontend
             formatted_messages = []
@@ -1471,17 +1366,13 @@ async def get_chat_history(
             
             return ChatHistoryResponse(messages=formatted_messages)
         except Exception as e:
-            print(f"Error fetching chat history: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Chat history endpoint error: {str(e)}")
-        print(f"Traceback: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch chat history: {str(e)}")
 
 
@@ -1512,23 +1403,17 @@ async def clear_chat_history(
         else:
             context = str(context).lower().strip()
         
-        print(f"Clearing chat history for user {user_id} with context: {context}")
         
         # Delete chat messages for this user and context
         try:
             delete_response = supabase_service.table("chat_messages").delete().eq("user_id", user_id).eq("context", context).execute()
-            print(f"Successfully deleted chat messages for user {user_id}")
         except Exception as e:
-            print(f"Error clearing chat history: {str(e)}")
             import traceback
-            print(f"Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to clear chat history: {str(e)}")
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Clear chat history endpoint error: {str(e)}")
-        print(f"Traceback: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to clear chat history: {str(e)}")
 

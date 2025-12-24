@@ -40,32 +40,27 @@ class AssetLLMService:
             quantity_match = re.search(r'(\d+)\s*(?:shares?|stocks?|units?)', user_lower)
             if quantity_match:
                 args['quantity'] = int(quantity_match.group(1))
-                print(f"DEBUG: Extracted quantity from message: {args['quantity']}")
             else:
                 # Check for "a [name] stock" or "a stock" or "a share" (implies quantity = 1)
                 # Pattern: "a" followed by optional words, then "stock" or "share"
                 if re.search(r'\ba\s+[\w\s]*?(?:stock|share)', user_lower):
                     args['quantity'] = 1
-                    print(f"DEBUG: Extracted quantity=1 from 'a [name] stock/share' pattern")
                 # Check for standalone numbers that might be quantity (e.g., "100 Reliance")
                 elif re.search(r'\b(\d+)\s+(?:reliance|tcs|infosys|hdfc|icici|sbi|wipro|apple|aapl|google|googl)', user_lower):
                     quantity_match = re.search(r'\b(\d+)\s+(?:reliance|tcs|infosys|hdfc|icici|sbi|wipro|apple|aapl|google|googl)', user_lower)
                     if quantity_match:
                         args['quantity'] = int(quantity_match.group(1))
-                        print(f"DEBUG: Extracted quantity from message: {args['quantity']}")
                 # Check for number at the start (e.g., "100 Reliance stock")
                 elif re.search(r'^(\d+)\s+', user_message):
                     quantity_match = re.search(r'^(\d+)\s+', user_message)
                     if quantity_match:
                         args['quantity'] = int(quantity_match.group(1))
-                        print(f"DEBUG: Extracted quantity from start of message: {args['quantity']}")
         
         # Extract price if missing
         if not args.get('purchase_price'):
             price_match = re.search(r'(?:at|for|costs?|@)\s*(\d+(?:\.\d+)?)', user_lower)
             if price_match:
                 args['purchase_price'] = float(price_match.group(1))
-                print(f"DEBUG: Extracted purchase_price from message: {args['purchase_price']}")
         
         # Extract date if missing
         if not args.get('purchase_date'):
@@ -75,7 +70,6 @@ class AssetLLMService:
                 day, month, year = date_match.groups()
                 try:
                     args['purchase_date'] = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                    print(f"DEBUG: Extracted purchase_date from message: {args['purchase_date']}")
                 except:
                     pass
             else:
@@ -85,7 +79,6 @@ class AssetLLMService:
                     day, month, year = date_match.groups()
                     try:
                         args['purchase_date'] = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                        print(f"DEBUG: Extracted purchase_date from message: {args['purchase_date']}")
                     except:
                         pass
         
@@ -111,7 +104,6 @@ class AssetLLMService:
                         args['asset_name'] = stock_name.title() + ' Industries' if stock_name != 'tcs' else 'TCS'
                     if not args.get('market'):
                         args['market'] = 'india'
-                    print(f"DEBUG: Extracted stock_symbol and market from message: {symbol}, india")
                     break
         
         # Extract market from currency mentions if missing - check combined text
@@ -119,16 +111,12 @@ class AssetLLMService:
             # Check for explicit market mentions in combined text
             if 'indian market' in combined_text_lower or 'india market' in combined_text_lower:
                 args['market'] = 'india'
-                print(f"DEBUG: Extracted market from explicit mention: india")
             elif 'european market' in combined_text_lower or 'europe market' in combined_text_lower:
                 args['market'] = 'europe'
-                print(f"DEBUG: Extracted market from explicit mention: europe")
             elif 'rupee' in combined_text_lower or '₹' in combined_text or 'inr' in combined_text_lower:
                 args['market'] = 'india'
-                print(f"DEBUG: Extracted market from currency: india")
             elif 'euro' in combined_text_lower or '€' in combined_text or 'eur' in combined_text_lower:
                 args['market'] = 'europe'
-                print(f"DEBUG: Extracted market from currency: europe")
         
         # Extract bank account information if missing - check conversation history too
         if args.get('asset_type') == 'bank_account':
@@ -141,13 +129,11 @@ class AssetLLMService:
                         args['bank_name'] = bank.title() + ' Bank' if not bank.endswith('bank') else bank.title()
                         if not args.get('market'):
                             args['market'] = 'india'
-                        print(f"DEBUG: Extracted bank_name from conversation: {args['bank_name']}")
                         break
             
             # If account name is not provided but bank name is, use bank name as account name
             if not args.get('asset_name') and args.get('bank_name'):
                 args['asset_name'] = args.get('bank_name')
-                print(f"DEBUG: Using bank_name as asset_name: {args['asset_name']}")
             
             # Extract account number - check current message, conversation history, and notes field
             if not args.get('account_number'):
@@ -160,13 +146,11 @@ class AssetLLMService:
                     acc_match_notes = re.search(r'(?:account\s*(?:number|no|#)?|acc\s*(?:number|no|#)?)\s*(?:is|:)?\s*(?:reconfirmed\s+as\s+)?(\d+)', notes_lower)
                     if acc_match_notes:
                         args['account_number'] = acc_match_notes.group(1)
-                        print(f"DEBUG: Extracted account_number from notes field (pattern 1): {args['account_number']}")
                     else:
                         # Pattern 2: "reconfirmed as 12831283" or "is 12831283"
                         simple_match_notes = re.search(r'(?:reconfirmed\s+as|is|:)\s+(\d{6,})', notes_lower)
                         if simple_match_notes:
                             args['account_number'] = simple_match_notes.group(1)
-                            print(f"DEBUG: Extracted account_number from notes field (pattern 2): {args['account_number']}")
                 
                 # If not found in notes, check current message and conversation history (combined_text)
                 if not args.get('account_number'):
@@ -174,32 +158,26 @@ class AssetLLMService:
                     acc_match = re.search(r'(?:account\s*(?:number|no|#)?|acc\s*(?:number|no|#)?)\s*(?:is|:)?\s*(\d+)', combined_text_lower)
                     if acc_match:
                         args['account_number'] = acc_match.group(1)
-                        print(f"DEBUG: Extracted account_number from conversation: {args['account_number']}")
                     else:
                         # Try simpler pattern: "is 12831283" or "reconfirmed as 12831283" (for follow-up messages)
                         simple_match = re.search(r'(?:is|as|:)\s+(\d{6,})', combined_text_lower)
                         if simple_match:
                             args['account_number'] = simple_match.group(1)
-                            print(f"DEBUG: Extracted account_number from simple pattern: {args['account_number']}")
                         else:
                             # Try even simpler: just a long number (6+ digits) that might be account number
                             # But only if we're in a bank account context
                             number_match = re.search(r'\b(\d{8,})\b', combined_text_lower)
                             if number_match:
                                 args['account_number'] = number_match.group(1)
-                                print(f"DEBUG: Extracted account_number as long number: {args['account_number']}")
             
             # Extract account type - check conversation history too
             if not args.get('account_type'):
                 if 'savings' in combined_text_lower:
                     args['account_type'] = 'savings'
-                    print(f"DEBUG: Extracted account_type: savings")
                 elif 'checking' in combined_text_lower:
                     args['account_type'] = 'checking'
-                    print(f"DEBUG: Extracted account_type: checking")
                 elif 'current' in combined_text_lower and 'account' in combined_text_lower:
                     args['account_type'] = 'current'
-                    print(f"DEBUG: Extracted account_type: current")
             
             # Extract current balance - check conversation history too, handle comma-separated numbers
             if not args.get('current_value'):
@@ -220,7 +198,6 @@ class AssetLLMService:
                         # Remove commas from the number
                         balance_str = balance_match.group(1).replace(',', '')
                         args['current_value'] = float(balance_str)
-                        print(f"DEBUG: Extracted current_value (balance) from conversation: {args['current_value']}")
                         break
         
         # Extract family_member_name if missing - check notes, other fields, and conversation
@@ -251,7 +228,6 @@ class AssetLLMService:
             for pattern in self_patterns:
                 if re.search(pattern, combined_text_lower):
                     args['family_member_name'] = 'self'
-                    print(f"DEBUG: Extracted family_member_name='self' from conversation (pattern: {pattern})")
                     family_member_found = True
                     break
             
@@ -261,12 +237,10 @@ class AssetLLMService:
                 # Check if message starts with "I" followed by action words
                 if re.search(r'^\s*i\s+(?:purchased|bought|own|have)', user_lower):
                     args['family_member_name'] = 'self'
-                    print(f"DEBUG: Extracted family_member_name='self' from 'I' at start of message")
                     family_member_found = True
                 # Check for "my account", "my bank account" patterns
                 elif re.search(r'\bmy\s+(?:bank\s+)?account\b', user_lower):
                     args['family_member_name'] = 'self'
-                    print(f"DEBUG: Extracted family_member_name='self' from 'my account' pattern")
                     family_member_found = True
             
             # Check for family member names in combined text (case-insensitive)
@@ -281,21 +255,18 @@ class AssetLLMService:
                     fm_name = fm.get("name", "").lower()
                     if fm_name and fm_name in combined_text_lower:
                         args['family_member_name'] = fm.get("name")  # Use original case
-                        print(f"DEBUG: Extracted family_member_name='{fm.get('name')}' from conversation")
                         family_member_found = True
                         break
             
             # If not found in conversation, check notes for family member mentions
             if not family_member_found and 'natesh' in notes:
                 args['family_member_name'] = 'Natesh'
-                print(f"DEBUG: Extracted family_member_name='Natesh' from notes")
                 family_member_found = True
             
             # Check if bank_name was incorrectly used (LLM sometimes puts family member name there)
             if not family_member_found and bank_name and bank_name not in ['savings', 'checking', 'current'] and len(bank_name) > 2:
                 # Might be a family member name
                 args['family_member_name'] = args.get('bank_name')
-                print(f"DEBUG: Extracted family_member_name from bank_name field: {args.get('bank_name')}")
                 # Remove it from bank_name
                 if args.get('asset_type') == 'stock':
                     args.pop('bank_name', None)
@@ -369,7 +340,6 @@ class AssetLLMService:
                                     "original_message": prev_msg.get("content", ""),
                                     "missing_info_message": msg.get("content", "")
                                 }
-                                print(f"DEBUG: Found incomplete request in history: {incomplete_request['original_message'][:100]}")
                                 break
                     if incomplete_request:
                         break
@@ -635,7 +605,6 @@ Respond with ONLY the JSON object."""
                 )
             except Exception as config_error:
                 # Fallback to simple JSON mode if schema doesn't work
-                print(f"Warning: Could not set response schema, using simple JSON mode: {config_error}")
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json"
                 )
@@ -662,7 +631,6 @@ Respond with ONLY the JSON object."""
                     text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
                     text_response = "".join(text_parts)
             
-            print(f"DEBUG: LLM JSON response: {text_response[:500]}...")
             
             # Parse JSON from response
             args = {}
@@ -680,31 +648,24 @@ Respond with ONLY the JSON object."""
                     
                     # Try to parse as JSON
                     args = json.loads(cleaned_response)
-                    print(f"DEBUG: Successfully parsed JSON: {args}")
                 except json.JSONDecodeError as json_parse_error:
-                    print(f"DEBUG: Could not parse JSON from response: {json_parse_error}")
-                    print(f"DEBUG: Full response was: {text_response}")
                     return {
                         "action": "none",
                         "response": "I encountered an error parsing your request. Please try rephrasing your asset management command."
                     }
                 except Exception as parse_error:
-                    print(f"DEBUG: Error parsing JSON: {parse_error}")
                     import traceback
-                    print(f"Traceback: {traceback.format_exc()}")
                     return {
                         "action": "none",
                         "response": "I encountered an error processing your request. Please try again."
                     }
             else:
-                print(f"DEBUG: No text response from LLM")
                 return {
                     "action": "none",
                     "response": "I didn't receive a valid response. Please try again."
                 }
             
             action = args.get('action', 'none') if args else 'none'
-            print(f"DEBUG: Extracted action: {action}, args keys: {list(args.keys()) if args else 'None'}")
             
             # Post-process to extract information that LLM might have missed
             # Only run post-processing if action is 'add' OR if user message contains asset-related keywords
@@ -716,7 +677,6 @@ Respond with ONLY the JSON object."""
             # Only post-process if action is 'add' OR if user message suggests asset management intent
             if action == 'add' or (action == 'none' and has_asset_intent and args.get('asset_type')):
                 args = self._extract_info_from_message(user_message, args, conversation_history, portfolio_data)
-                print(f"DEBUG: After post-processing, args keys: {list(args.keys())}")
                 # Only change action from 'none' to 'add' if:
                 # 1. User message contains asset management intent
                 # 2. We have asset_type
@@ -728,9 +688,7 @@ Respond with ONLY the JSON object."""
                     if has_additional_info:
                         action = 'add'  # Try to proceed if we have asset type AND some other info
                         args['action'] = 'add'
-                        print(f"DEBUG: Changed action from 'none' to 'add' after post-processing (has intent and info)")
                     else:
-                        print(f"DEBUG: User has asset intent but insufficient info, keeping action as 'none'")
             
             # Validate required fields if action is "add" - if missing, change to "none"
             if action == 'add':
@@ -780,7 +738,6 @@ Respond with ONLY the JSON object."""
                         missing_fields.append('account owner (family member name or "self")')
                 
                 if missing_fields:
-                    print(f"DEBUG: Missing required fields: {missing_fields}, changing action to 'none'")
                     action = 'none'
                     args['action'] = 'none'
                     args['missing_fields'] = missing_fields
@@ -793,7 +750,6 @@ Respond with ONLY the JSON object."""
                             args['currency'] = 'INR'
                         elif market_lower == 'europe':
                             args['currency'] = 'EUR'
-                        print(f"DEBUG: Converted market '{market}' to currency '{args.get('currency')}'")
             
             if action == 'none':
                 # Check if there's a custom message from LLM about missing fields
@@ -801,8 +757,6 @@ Respond with ONLY the JSON object."""
                 missing_fields = args.get('missing_fields', [])
                 custom_message = args.get('message') or args.get('notes') or args.get('response', '')
                 
-                print(f"DEBUG: action='none', custom_message from LLM: {custom_message[:200] if custom_message else 'None'}")
-                print(f"DEBUG: missing_fields: {missing_fields}")
                 
                 # Clean up the message - remove any JSON formatting artifacts
                 if custom_message:
@@ -828,7 +782,6 @@ Respond with ONLY the JSON object."""
                     )
                     if is_helpful:
                         response_msg = custom_message
-                        print(f"DEBUG: Using custom message from LLM: {response_msg[:100]}...")
                     else:
                         # Use missing_fields message if available, otherwise use custom message
                         if missing_fields:
@@ -840,7 +793,6 @@ Respond with ONLY the JSON object."""
                 else:
                     response_msg = "I understand your message, but it doesn't appear to be a request to add, delete, or update an asset. How can I help you with your portfolio?"
                 
-                print(f"DEBUG: Final response message: {response_msg[:100]}...")
                 return {
                     "action": "none",
                     "response": response_msg

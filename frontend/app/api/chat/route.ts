@@ -145,8 +145,6 @@ export async function POST(request: NextRequest) {
     const { message, conversation_history, context } = body;
 
     // Debug logging
-    console.log("Frontend API - Received context:", context);
-    console.log("Frontend API - Context type:", typeof context);
 
     // Validate input
     if (!message) {

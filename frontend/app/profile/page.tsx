@@ -47,7 +47,6 @@ export default function ProfilePage() {
 
       if (response.ok) {
         const members = await response.json();
-        console.log(`Fetched ${members?.length || 0} family members`);
         setFamilyMembers(members || []);
       } else if (response.status === 401) {
         localStorage.removeItem("access_token");

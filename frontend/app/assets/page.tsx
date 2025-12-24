@@ -359,7 +359,6 @@ export default function AssetsPage() {
     try {
       const accessToken = localStorage.getItem("access_token");
       if (!accessToken) {
-        console.log("No access token found, skipping family members fetch");
         return;
       }
 
@@ -383,7 +382,6 @@ export default function AssetsPage() {
 
       if (response.ok) {
         const members = await response.json();
-        console.log(`Fetched ${members?.length || 0} family members`);
         setFamilyMembers(members || []);
       } else if (response.status === 401) {
         localStorage.removeItem("access_token");
@@ -420,9 +418,7 @@ export default function AssetsPage() {
 
       if (response.ok) {
         const assets = await response.json();
-        console.log(`Fetched ${assets.length} assets from database`);
         if (assets.length > 0) {
-          console.log("Sample asset:", assets[0]);
         }
         
         // Separate assets by market (based on currency)
@@ -770,11 +766,9 @@ export default function AssetsPage() {
       // Always set family_member_id - null for Self, or the family member ID
       assetData.family_member_id = stock.familyMemberId || null;
 
-      console.log(`Saving stock to database: ${stock.name}, market: ${market}, currency: ${currency}`);
 
       if (stock.dbId) {
         // Update existing asset
-        console.log(`Updating existing stock with dbId: ${stock.dbId}`);
         const response = await fetch(`/api/assets/${stock.dbId}`, {
           method: "PUT",
           headers: {
@@ -816,7 +810,6 @@ export default function AssetsPage() {
         return false;
       }
 
-      console.log(`Deleting asset with ID: ${assetId}`);
       const response = await fetch(`/api/assets/${assetId}`, {
         method: "DELETE",
         headers: {
@@ -831,7 +824,6 @@ export default function AssetsPage() {
         return false;
       }
 
-      console.log(`Successfully deleted asset: ${assetId}`);
       return true;
     } catch (error) {
       console.error("Error deleting asset from database:", error);
@@ -872,11 +864,9 @@ export default function AssetsPage() {
       // Always set family_member_id - null for Self, or the family member ID
       assetData.family_member_id = fd.familyMemberId || null;
 
-      console.log(`Saving fixed deposit to database: ${fd.bankName}, market: ${market}, currency: ${currency}`);
 
       if (fd.dbId) {
         // Update existing asset
-        console.log(`Updating existing fixed deposit with dbId: ${fd.dbId}`);
         const response = await fetch(`/api/assets/${fd.dbId}`, {
           method: "PUT",
           headers: {
@@ -890,12 +880,10 @@ export default function AssetsPage() {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
           console.error(`Failed to update fixed deposit: ${errorData.message || response.statusText}`);
         } else {
-          console.log(`Successfully updated fixed deposit: ${fd.bankName}`);
         }
         return response.ok;
       } else {
         // Create new asset
-        console.log(`Creating new fixed deposit: ${fd.bankName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -907,7 +895,6 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
-          console.log(`Successfully created fixed deposit: ${fd.bankName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
@@ -962,11 +949,9 @@ export default function AssetsPage() {
       // Always set family_member_id - null for Self, or the family member ID
       assetData.family_member_id = policy.familyMemberId || null;
 
-      console.log(`Saving insurance policy to database: ${policy.insuranceName}, market: ${market}, currency: ${currency}`);
 
       if (policy.dbId) {
         // Update existing asset
-        console.log(`Updating existing insurance policy with dbId: ${policy.dbId}`);
         const response = await fetch(`/api/assets/${policy.dbId}`, {
           method: "PUT",
           headers: {
@@ -983,11 +968,9 @@ export default function AssetsPage() {
         }
 
         const updatedAsset = await response.json();
-        console.log(`Successfully updated insurance policy: ${policy.insuranceName}`);
         return updatedAsset.id;
       } else {
         // Create new asset
-        console.log(`Creating new insurance policy: ${policy.insuranceName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -1004,7 +987,6 @@ export default function AssetsPage() {
         }
 
         const createdAsset = await response.json();
-        console.log(`Successfully created insurance policy: ${policy.insuranceName}, dbId: ${createdAsset.id}`);
         return createdAsset.id;
       }
     } catch (error) {
@@ -1048,11 +1030,9 @@ export default function AssetsPage() {
       // Always set family_member_id - null for Self, or the family member ID
       assetData.family_member_id = commodity.familyMemberId || null;
 
-      console.log(`Saving commodity to database: ${commodity.commodityName}, market: ${market}, currency: ${currency}`);
 
       if (commodity.dbId) {
         // Update existing asset
-        console.log(`Updating existing commodity with dbId: ${commodity.dbId}`);
         const response = await fetch(`/api/assets/${commodity.dbId}`, {
           method: "PUT",
           headers: {
@@ -1069,11 +1049,9 @@ export default function AssetsPage() {
         }
 
         const updatedAsset = await response.json();
-        console.log(`Successfully updated commodity: ${commodity.commodityName}`);
         return updatedAsset.id;
       } else {
         // Create new asset
-        console.log(`Creating new commodity: ${commodity.commodityName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -1090,7 +1068,6 @@ export default function AssetsPage() {
         }
 
         const createdAsset = await response.json();
-        console.log(`Successfully created commodity: ${commodity.commodityName}, dbId: ${createdAsset.id}`);
         return createdAsset.id;
       }
     } catch (error) {
@@ -1128,11 +1105,9 @@ export default function AssetsPage() {
         family_member_id: fund.familyMemberId || null,
       };
 
-      console.log(`Saving mutual fund to database: ${fund.fundName}, market: ${market}, currency: ${currency}`);
 
       if (fund.dbId) {
         // Update existing asset
-        console.log(`Updating existing mutual fund with dbId: ${fund.dbId}`);
         const response = await fetch(`/api/assets/${fund.dbId}`, {
           method: "PUT",
           headers: {
@@ -1146,12 +1121,10 @@ export default function AssetsPage() {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
           console.error(`Failed to update mutual fund: ${errorData.message || response.statusText}`);
         } else {
-          console.log(`Successfully updated mutual fund: ${fund.fundName}`);
         }
         return response.ok;
       } else {
         // Create new asset
-        console.log(`Creating new mutual fund: ${fund.fundName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -1163,7 +1136,6 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
-          console.log(`Successfully created mutual fund: ${fund.fundName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
@@ -1206,7 +1178,6 @@ export default function AssetsPage() {
       // Always set family_member_id - null for Self, or the family member ID
       assetData.family_member_id = account.familyMemberId || null;
 
-      console.log(`Saving bank account to database: ${account.bankName}, market: ${market}, currency: ${currency}`);
 
       if (account.dbId) {
         // Update existing asset
@@ -1223,12 +1194,10 @@ export default function AssetsPage() {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
           console.error(`Failed to update bank account: ${errorData.message || response.statusText}`);
         } else {
-          console.log(`Successfully updated bank account: ${account.bankName}`);
         }
         return response.ok;
       } else {
         // Create new asset
-        console.log(`Creating new bank account: ${account.bankName}`);
         const response = await fetch("/api/assets", {
           method: "POST",
           headers: {
@@ -1240,7 +1209,6 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
-          console.log(`Successfully created bank account: ${account.bankName}, dbId: ${createdAsset.id}`);
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));

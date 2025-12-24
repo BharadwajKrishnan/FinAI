@@ -230,12 +230,7 @@ export default function ExpensesPage() {
       const data = await response.json();
       
       // Debug: Log fetched data
-      console.log(`Fetched expenses for ${selectedMonth}/${selectedYear}:`, data);
-      console.log(`Number of expenses fetched: ${data.length}`);
       if (data.length > 0) {
-        console.log("Sample expense:", data[0]);
-        console.log("Sample expense date:", data[0].expense_date);
-        console.log("Sample expense family_member_id:", data[0].family_member_id);
       }
       
       // Ensure family_member_id is properly parsed (convert null to undefined for consistency)
@@ -253,7 +248,6 @@ export default function ExpensesPage() {
         .reduce((sum: number, expense: Expense) => sum + parseFloat(expense.amount.toString()), 0);
       setMonthTotal(total);
       
-      console.log(`Total expenses in ${selectedCurrency}: ${total}`);
     } catch (error) {
       console.error("Error fetching expenses:", error);
       setExpenses([]);
@@ -315,12 +309,10 @@ export default function ExpensesPage() {
             } else {
               expenseDate = formatDateString(selectedYear, selectedMonth, 1);
             }
-            console.log("Date corrected from", formData.expense_date, "to", expenseDate, "to match selected month/year:", selectedMonth, selectedYear);
           }
         } else {
           // Invalid date format, use default
           expenseDate = getDefaultDate();
-          console.log("Invalid date format, using default:", expenseDate);
         }
       }
       
@@ -335,8 +327,6 @@ export default function ExpensesPage() {
       expenseData.family_member_id = selectedFamilyMemberId || null;
 
       // Debug: Log expense data being sent
-      console.log("Saving expense:", expenseData);
-      console.log("Selected month/year:", selectedMonth, selectedYear);
 
       const url = editingExpense
         ? `/api/expenses/${editingExpense.id}`
@@ -358,19 +348,12 @@ export default function ExpensesPage() {
       }
 
       const savedExpense = await response.json();
-      console.log("Expense saved successfully:", savedExpense);
-      console.log("Saved expense date:", savedExpense.expense_date);
-      console.log("Saved expense currency:", savedExpense.currency);
-      console.log("Expected month/year:", selectedMonth, selectedYear);
-      console.log("Selected currency:", selectedCurrency);
       
       // Parse the saved expense date to verify it's in the correct month
       if (savedExpense.expense_date) {
         const savedDate = new Date(savedExpense.expense_date);
         const savedMonth = savedDate.getMonth() + 1;
         const savedYear = savedDate.getFullYear();
-        console.log("Parsed saved date - Month:", savedMonth, "Year:", savedYear);
-        console.log("Date matches selected month/year:", savedMonth === selectedMonth && savedYear === selectedYear);
       }
 
       // Reset form
@@ -387,9 +370,7 @@ export default function ExpensesPage() {
       setIsAddExpenseModalOpen(false);
       
       // Refresh expenses list immediately after adding/updating
-      console.log("Refreshing expenses list...");
       await fetchExpenses();
-      console.log("Expenses list refreshed");
     } catch (error: any) {
       console.error("Error saving expense:", error);
       alert(error.message || "Failed to save expense");

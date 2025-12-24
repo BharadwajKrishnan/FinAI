@@ -42,7 +42,6 @@ export default function SignupForm() {
       const responseData = await response.json();
 
       // Handle successful signup
-      console.log("Signup successful:", responseData);
       setData(responseData);
       setSuccess(true);
       

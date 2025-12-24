@@ -40,7 +40,6 @@ export default function LoginForm() {
       const data = await response.json();
 
       // Handle successful login (redirect, store token, etc.)
-      console.log("Login successful:", data);
       
       // Store tokens if provided
       if (data.access_token) {
