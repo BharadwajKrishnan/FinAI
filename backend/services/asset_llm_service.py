@@ -603,15 +603,29 @@ Respond with ONLY the JSON object."""
             print(f"DEBUG: Extracted action: {action}, args keys: {list(args.keys()) if args else 'None'}")
             
             # Post-process to extract information that LLM might have missed
-            # Run post-processing if action is 'add' or if LLM returned 'none' but we have asset_type (might be extractable)
-            if action == 'add' or (action == 'none' and args.get('asset_type')):
+            # Only run post-processing if action is 'add' OR if user message contains asset-related keywords
+            # This prevents false positives from greetings like "hi"
+            user_lower = user_message.lower()
+            asset_keywords = ['add', 'create', 'purchase', 'buy', 'stock', 'share', 'mutual fund', 'asset', 'portfolio', 'invest']
+            has_asset_intent = any(keyword in user_lower for keyword in asset_keywords)
+            
+            # Only post-process if action is 'add' OR if user message suggests asset management intent
+            if action == 'add' or (action == 'none' and has_asset_intent and args.get('asset_type')):
                 args = self._extract_info_from_message(user_message, args, conversation_history, portfolio_data)
                 print(f"DEBUG: After post-processing, args keys: {list(args.keys())}")
-                # If we extracted information and now have asset_type, try to proceed
-                if action == 'none' and args.get('asset_type'):
-                    action = 'add'  # Try to proceed if we have asset type
-                    args['action'] = 'add'
-                    print(f"DEBUG: Changed action from 'none' to 'add' after post-processing")
+                # Only change action from 'none' to 'add' if:
+                # 1. User message contains asset management intent
+                # 2. We have asset_type
+                # 3. We have at least some other required information (not just asset_type)
+                if action == 'none' and has_asset_intent and args.get('asset_type'):
+                    # Check if we have at least one other piece of information (name, quantity, price, etc.)
+                    has_additional_info = any(args.get(key) for key in ['asset_name', 'stock_symbol', 'quantity', 'purchase_price', 'purchase_date', 'market'])
+                    if has_additional_info:
+                        action = 'add'  # Try to proceed if we have asset type AND some other info
+                        args['action'] = 'add'
+                        print(f"DEBUG: Changed action from 'none' to 'add' after post-processing (has intent and info)")
+                    else:
+                        print(f"DEBUG: User has asset intent but insufficient info, keeping action as 'none'")
             
             # Validate required fields if action is "add" - if missing, change to "none"
             if action == 'add':
