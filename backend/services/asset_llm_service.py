@@ -138,11 +138,39 @@ class AssetLLMService:
             
             family_member_found = False
             
-            # Check for "self", "me", "myself" in combined text
-            if ' by self' in combined_text_lower or 'for self' in combined_text_lower or 'for me' in combined_text_lower or 'myself' in combined_text_lower or 'purchased by self' in combined_text_lower:
-                args['family_member_name'] = 'self'
-                print(f"DEBUG: Extracted family_member_name='self' from conversation")
-                family_member_found = True
+            # Check for "self", "me", "myself", "I" patterns in combined text
+            # Use regex to match whole words/phrases to avoid false positives
+            self_patterns = [
+                r'\bowner\s+is\s+(?:self|me|myself)\b',
+                r'\bstock\s+owner\s+is\s+(?:self|me|myself)\b',
+                r'\bfor\s+(?:self|me|myself)\b',
+                r'\bby\s+(?:self|me|myself)\b',
+                r'\bpurchased\s+by\s+(?:self|me|myself)\b',
+                r'\bbought\s+by\s+(?:self|me|myself)\b',
+                r'\bi\s+purchased\b',
+                r'\bi\s+bought\b',
+                r'\bi\s+own\b',
+                r'\bmy\s+stock\b',
+                r'\bmy\s+asset\b',
+                r'\bbelongs\s+to\s+(?:me|self|myself)\b',
+                r'\bis\s+(?:mine|my)\b',
+            ]
+            
+            for pattern in self_patterns:
+                if re.search(pattern, combined_text_lower):
+                    args['family_member_name'] = 'self'
+                    print(f"DEBUG: Extracted family_member_name='self' from conversation (pattern: {pattern})")
+                    family_member_found = True
+                    break
+            
+            # Also check for standalone "I" at the start of sentences (e.g., "I purchased", "I bought")
+            # and simple ownership indicators
+            if not family_member_found:
+                # Check if message starts with "I" followed by action words
+                if re.search(r'^\s*i\s+(?:purchased|bought|own|have)', user_lower):
+                    args['family_member_name'] = 'self'
+                    print(f"DEBUG: Extracted family_member_name='self' from 'I' at start of message")
+                    family_member_found = True
             
             # Check for family member names in combined text (case-insensitive)
             if not family_member_found:
@@ -420,6 +448,8 @@ IMPORTANT FOR STOCKS:
 - family_member_name is REQUIRED. It must be the name of a family member from the portfolio, or "self" if the stock belongs to the user.
 - If the user mentions a family member name that is not in the portfolio, you should still extract it, but note that it needs to be added in the Profile.
 - Extract family member names from phrases like "for my brother", "for John", "for my father", "for self", "for me", etc.
+- CRITICAL: If the user says "I", "self", "me", "myself", "I purchased", "I bought", "my stock", "owner is self", "stock owner is self", "stock owner is me", or any variation indicating the stock belongs to the user, you MUST set family_member_name to "self". Do NOT leave it empty or undefined.
+- CRITICAL: If the user says "I", "self", "me", "myself", "I purchased", "I bought", "my stock", "owner is self", "stock owner is self", or any variation indicating the stock belongs to the user, you MUST set family_member_name to "self".
 
 EXTRACTION RULES (APPLY TO ALL MESSAGES IN CONVERSATION HISTORY):
 - Extract stock names from ANY message in the conversation (e.g., "Reliance" → stock_symbol: "RELIANCE", asset_name: "Reliance Industries")
@@ -427,6 +457,7 @@ EXTRACTION RULES (APPLY TO ALL MESSAGES IN CONVERSATION HISTORY):
 - Extract prices from ANY message (e.g., "at 1550" or "for 1500 rupees" → purchase_price: 1550 or 1500)
 - Extract dates from ANY message and convert to YYYY-MM-DD format (e.g., "24.11.2025" → "2025-11-24", "24-12-2025" → "2025-12-24")
 - Extract family member names from ANY message (e.g., "for my brother", "Natesh purchased", "for John" → family_member_name)
+- CRITICAL for family_member_name: If ANY message contains "I", "self", "me", "myself", "I purchased", "I bought", "owner is self", "stock owner is self", "stock owner is me", or similar phrases indicating the user owns the stock, you MUST set family_member_name to "self". This is a REQUIRED field - do not leave it empty.
 - Infer market from ANY message in the conversation:
   * Indian stock names (Reliance, TCS, Infosys, HDFC, ICICI, SBI, etc.) → market: "india"
   * Mentions of "rupees", "₹", "INR", "Indian market" → market: "india"

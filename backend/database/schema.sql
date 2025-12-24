@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS family_members (
     
     -- Family member details
     name VARCHAR(255) NOT NULL, -- Name of the family member
-    relationship VARCHAR(50) NOT NULL CHECK (relationship IN ('Son', 'Daughter', 'Spouse', 'Father', 'Mother', 'Grandfather', 'Grandmother', 'Brother', 'Sister')),
+    relationship VARCHAR(50) NOT NULL CHECK (relationship IN ('Self', 'Son', 'Daughter', 'Spouse', 'Father', 'Mother', 'Grandfather', 'Grandmother', 'Brother', 'Sister')),
     
     -- Additional metadata
     notes TEXT, -- User notes about the family member

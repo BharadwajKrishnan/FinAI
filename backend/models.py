@@ -25,6 +25,7 @@ class BankAccountType(str, Enum):
 
 
 class FamilyMemberRelationship(str, Enum):
+    SELF = "Self"
     SON = "Son"
     DAUGHTER = "Daughter"
     SPOUSE = "Spouse"

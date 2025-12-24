@@ -242,6 +242,13 @@ async def chat(
                     for member_name, assets_by_type in family_member_assets.items():
                         total_assets = sum(len(assets_by_type[at]) for at in ["stocks", "mutual_funds", "bank_accounts", "fixed_deposits", "insurance_policies", "commodities"])
                         print(f"  {member_name}: {total_assets} assets")
+                
+                # Add family members list to portfolio_data for system prompt
+                portfolio_data["family_members"] = [
+                    {"id": str(fm.get("id")), "name": fm.get("name"), "relationship": fm.get("relationship")}
+                    for fm in family_members.values()
+                ]
+                print(f"Added {len(portfolio_data['family_members'])} family members to portfolio_data for system prompt")
             except Exception as portfolio_error:
                 # If portfolio fetch fails, continue without portfolio data
                 import traceback
@@ -267,7 +274,8 @@ async def chat(
                         "insurance_policies": [],
                         "commodities": [],
                         "by_family_member": {}
-                    }
+                    },
+                    "family_members": []
                 }
         
         # Fetch user's expenses from database (only if context is "expenses")
@@ -433,6 +441,25 @@ async def chat(
             print(f"Creating system prompt for ASSETS context...")
             print(f"Portfolio JSON preview (first 500 chars): {portfolio_json[:500] if portfolio_json else 'No portfolio'}")
             
+            # Build family members info string for the prompt
+            family_members_info = ""
+            if portfolio_data and "family_members" in portfolio_data:
+                family_members_list = portfolio_data["family_members"]
+                if family_members_list:
+                    family_members_info = "AVAILABLE FAMILY MEMBERS:\n"
+                    for member in family_members_list:
+                        name = member.get("name", "")
+                        relationship = member.get("relationship", "")
+                        if relationship:
+                            family_members_info += f"- {name} ({relationship})\n"
+                        else:
+                            family_members_info += f"- {name}\n"
+                    family_members_info += "- Self (for your own assets)\n"
+                else:
+                    family_members_info = "AVAILABLE FAMILY MEMBERS:\n- Self (for your own assets)\n"
+            else:
+                family_members_info = "AVAILABLE FAMILY MEMBERS:\n- Self (for your own assets)\n"
+            
             system_prompt = f"""<Role>
 You are FinAI, an intelligent financial advisor. Your purpose is to help users manage their finances, understand markets, and make informed investment decisions. You must always communicate clearly, accurately, and professionally while providing factual, data-based insights.
 </Role>
@@ -477,8 +504,12 @@ Caution: Financial markets carry inherent risks. This recommendation is provided
 3. Use numerical lists, tables, or charts to summarize information effectively.
 4. Clearly state data limitations or uncertain conditions when applicable.
 5. Uphold user trust and confidentiality in all interactions.
-6. Introducce yourself only once in the beginning of the conversation. Do not repeat yourself.
-7. CRITICAL: DO NOT claim to have added, deleted, or updated assets in the database unless you actually performed the operation. You can only view and analyze the portfolio - you cannot modify it directly. If a user asks to add/delete/update an asset, acknowledge their request but explain that asset management operations are handled separately.
+6. Introduce yourself only once in the beginning of the conversation. Do not repeat yourself.
+7. **ASSET MANAGEMENT CAPABILITIES**: You have the ability to add, update, and delete assets in the portfolio when explicitly requested by the user. However:
+   - For normal questions, portfolio analysis, and investment advice, respond conversationally as usual
+   - ONLY perform asset operations (add/update/delete) when the user explicitly asks you to do so (e.g., "add a stock", "update my portfolio", "delete this asset")
+   - When performing asset operations, provide clear confirmation of what was done
+   - For questions and analysis, continue to provide insights and recommendations without performing operations
 </Behavior>
 
 <Example_Introduction>
@@ -513,7 +544,38 @@ When analyzing the portfolio:
 6. Reference specific assets by name, market, and family member when making recommendations
 7. Note that India and Europe markets are separate - assets in one market do not affect the other
 8. When calculating net worth or asset allocation, you can provide both overall family net worth and individual family member net worth
-</Current_Portfolio>"""
+</Current_Portfolio>
+
+<Asset_Management>
+You have the capability to add, update, and delete assets in the portfolio when the user explicitly requests it.
+
+{family_members_info}
+
+AVAILABLE MARKETS:
+- "india" (currency: INR, ₹, rupees) - for Indian stocks and assets
+- "europe" (currency: EUR, €, euros) - for European stocks and assets
+
+**IMPORTANT BEHAVIOR RULES:**
+1. For normal questions, portfolio analysis, and investment advice, respond conversationally as usual. Do NOT perform any operations.
+2. ONLY perform asset operations (add/update/delete) when the user explicitly asks you to do so with clear intent (e.g., "add a stock", "add Reliance stock", "update my portfolio", "delete this asset", "remove Mahindra stock").
+3. When the user explicitly asks to ADD a stock, you must collect ALL required information:
+   - Stock Name (e.g., "Reliance", "TCS", "Mahindra")
+   - Stock Price (purchase price per share)
+   - Quantity (number of shares)
+   - Purchase Date (in YYYY-MM-DD format)
+   - Stock Owner (family member name from the list above, or "self"/"me"/"myself" for the user)
+   - Market (India or Europe)
+   
+   If ANY required information is missing, ask the user for it clearly. Do NOT assume or guess values. Extract information from the entire conversation history if available.
+
+4. When the user explicitly asks to UPDATE an asset, identify the asset from the portfolio and update only the fields they specify.
+
+5. When the user explicitly asks to DELETE an asset, identify the asset from the portfolio and confirm the deletion.
+
+6. After successfully performing an operation, provide a clear confirmation message (e.g., "Successfully added Reliance stock to your portfolio" or "Successfully updated the Mahindra stock").
+
+Remember: Your primary role is to provide financial insights and analysis. Asset management operations are a secondary capability that should only be used when explicitly requested.
+</Asset_Management>"""
         
         elif context == "expenses":
             # System prompt for Expense Tracker tab

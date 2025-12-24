@@ -102,18 +102,92 @@ async def signup(user_data: SignupRequest):
     """
     try:
         # Create user in Supabase Auth
-        response = supabase.auth.sign_up({
-            "email": user_data.email,
-            "password": user_data.password,
-            "options": {
-                "data": {
-                    "name": user_data.name
+        # Note: If there's a database trigger (like creating user_profiles) that's failing,
+        # you may need to check your Supabase database triggers and functions
+        try:
+            response = supabase.auth.sign_up({
+                "email": user_data.email,
+                "password": user_data.password,
+                "options": {
+                    "data": {
+                        "name": user_data.name
+                    }
                 }
-            }
-        })
+            })
+        except Exception as auth_error:
+            error_str = str(auth_error)
+            # Check for database-related errors from Supabase
+            if "Database error" in error_str or "500" in error_str:
+                print(f"ERROR: Supabase auth signup failed with database error: {error_str}")
+                print("\n" + "="*70)
+                print("DIAGNOSIS: This is a database-level error, not a code issue.")
+                print("="*70)
+                print("\nMost likely causes:")
+                print("1. A database trigger on auth.users is failing")
+                print("2. A database function called during signup has an error")
+                print("3. A constraint violation in a related table")
+                print("\nIMMEDIATE FIX:")
+                print("Since user_profiles table was removed, you need to remove the trigger:")
+                print("Run this SQL in your Supabase SQL Editor:")
+                print("  DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;")
+                print("  DROP FUNCTION IF EXISTS public.handle_new_user() CASCADE;")
+                print("\nOr use the script: backend/database/remove_user_profiles_trigger.sql")
+                print("\nDIAGNOSTIC:")
+                print("Run this SQL to check what's causing the issue:")
+                print("  backend/database/fix_signup_error.sql")
+                print("="*70 + "\n")
+                # Re-raise with a more user-friendly message
+                raise HTTPException(
+                    status_code=500,
+                    detail="Database error during signup. This is usually caused by a database trigger or function. Please check the backend logs for detailed instructions, or run the diagnostic scripts in backend/database/ to identify and fix the issue."
+                )
+            raise
         
         if not response.user:
             raise HTTPException(status_code=400, detail="Failed to create user")
+        
+        # Create default "Self" family member for the new user
+        # This is wrapped in try-except so signup doesn't fail if family member creation fails
+        try:
+            from database.supabase_client import supabase_service
+            user_id = str(response.user.id)
+            user_name = user_data.name or user_data.email.split("@")[0].title()
+            
+            self_family_member = {
+                "user_id": user_id,
+                "name": user_name,
+                "relationship": "Self"
+            }
+            
+            # Use service role client to bypass RLS for initial setup
+            try:
+                family_member_response = supabase_service.table("family_members").insert(self_family_member).execute()
+                if family_member_response.data:
+                    print(f"Successfully created default 'Self' family member for user {user_id} with name '{user_name}'")
+                else:
+                    print(f"Warning: Failed to create default 'Self' family member for user {user_id}")
+            except Exception as insert_error:
+                error_str = str(insert_error)
+                # Check if it's a constraint error
+                if "check constraint" in error_str.lower() or "23514" in error_str:
+                    print(f"ERROR: Database constraint violation when creating 'Self' family member.")
+                    print(f"Error details: {error_str}")
+                    print("The database constraint needs to be updated to allow 'Self' as a relationship value.")
+                    print("Please run the migration script in Supabase SQL Editor:")
+                    print("  backend/database/add_self_relationship.sql")
+                    # Don't fail signup - the user can still use the app, and the 'Self' member will be created
+                    # automatically when they first access the family members endpoint
+                    print("User signup will continue, but 'Self' family member will be created on first access.")
+                else:
+                    # Other errors - log but don't fail signup
+                    print(f"Warning: Could not create default 'Self' family member during signup: {error_str}")
+                    import traceback
+                    print(traceback.format_exc())
+        except Exception as fm_error:
+            # Outer catch - shouldn't happen, but just in case
+            print(f"Warning: Unexpected error in family member creation: {str(fm_error)}")
+            import traceback
+            print(traceback.format_exc())
         
         # Check if email confirmation is required
         # If session is None, email confirmation is required
@@ -141,22 +215,36 @@ async def signup(user_data: SignupRequest):
                 "name": user_data.name
             }
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
-        error_message = str(e)
-        # Check for various "user exists" error patterns from Supabase
-        if any(keyword in error_message.lower() for keyword in [
-            "already registered", 
-            "already exists", 
-            "user already registered",
-            "email address is already registered"
-        ]):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"User with email {user_data.email} already exists. Please use a different email or try logging in instead."
-            )
-        # Log the full error for debugging
-        print(f"Signup error: {error_message}")
-        raise HTTPException(status_code=400, detail=f"Failed to create user: {error_message}")
+            error_message = str(e)
+            # Check for various "user exists" error patterns from Supabase
+            if any(keyword in error_message.lower() for keyword in [
+                "already registered", 
+                "already exists", 
+                "user already registered",
+                "email address is already registered"
+            ]):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"User with email {user_data.email} already exists. Please use a different email or try logging in instead."
+                )
+            # Check for database constraint errors
+            if "check constraint" in error_message.lower() or "23514" in error_message:
+                print(f"Database constraint error during signup: {error_message}")
+                print("NOTE: The database constraint needs to be updated to allow 'Self' as a relationship value.")
+                print("Please run the migration script: backend/database/add_self_relationship.sql")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Database configuration error. Please contact support or run the database migration script."
+                )
+            # Log the full error for debugging
+            print(f"Signup error: {error_message}")
+            import traceback
+            print(traceback.format_exc())
+            raise HTTPException(status_code=400, detail=f"Failed to create user: {error_message}")
 
 
 @app.post("/api/auth/login", response_model=LoginResponse)
