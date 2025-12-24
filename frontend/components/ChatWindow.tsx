@@ -12,9 +12,10 @@ interface Message {
 
 interface ChatWindowProps {
   context?: "assets" | "expenses"; // Context to determine which system prompt to use
+  onAssetCreated?: () => void; // Callback to refresh assets when a new asset is created
 }
 
-export default function ChatWindow({ context = "assets" }: ChatWindowProps) {
+export default function ChatWindow({ context = "assets", onAssetCreated }: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -189,6 +190,29 @@ export default function ChatWindow({ context = "assets" }: ChatWindowProps) {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+
+      // Check if an asset was successfully created and trigger refresh
+      if (context === "assets" && onAssetCreated) {
+        const responseText = data.response?.toLowerCase() || "";
+        // Check for success indicators in the response
+        const successIndicators = [
+          "successfully created",
+          "successfully added",
+          "asset has been added",
+          "asset has been created",
+          "added to your portfolio",
+          "created asset",
+          "added a new",
+        ];
+        
+        if (successIndicators.some(indicator => responseText.includes(indicator))) {
+          console.log("Asset creation detected, triggering refresh...");
+          // Small delay to ensure database is updated
+          setTimeout(() => {
+            onAssetCreated();
+          }, 500);
+        }
+      }
     } catch (error) {
       console.error("Error sending message:", error);
       let errorMessage = "Sorry, I encountered an error. Please try again.";

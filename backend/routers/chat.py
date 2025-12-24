@@ -13,7 +13,9 @@ import uuid
 import asyncio
 from auth import get_current_user, security
 from services.llm_service import llm_service
+from services.asset_llm_service import asset_llm_service
 from database.supabase_client import supabase, supabase_service, get_supabase_client_with_token
+from models import AssetCreate, AssetUpdate
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -168,6 +170,8 @@ async def chat(
                         portfolio_data[market]["stocks"].append(asset_info)
                     elif asset_type == "mutual_fund":
                         asset_info.update({
+                            "mutual_fund_code": asset.get("mutual_fund_code"),
+                            "fund_house": asset.get("fund_house"),
                             "nav": float(asset.get("nav", 0)) if asset.get("nav") else 0,
                             "units": float(asset.get("units", 0)) if asset.get("units") else 0,
                             "nav_purchase_date": asset.get("nav_purchase_date")
@@ -474,6 +478,7 @@ Caution: Financial markets carry inherent risks. This recommendation is provided
 4. Clearly state data limitations or uncertain conditions when applicable.
 5. Uphold user trust and confidentiality in all interactions.
 6. Introducce yourself only once in the beginning of the conversation. Do not repeat yourself.
+7. CRITICAL: DO NOT claim to have added, deleted, or updated assets in the database unless you actually performed the operation. You can only view and analyze the portfolio - you cannot modify it directly. If a user asks to add/delete/update an asset, acknowledge their request but explain that asset management operations are handled separately.
 </Behavior>
 
 <Example_Introduction>
@@ -585,6 +590,494 @@ When analyzing expenses:
         else:
             # Default/fallback prompt
             system_prompt = "You are FinAI, a helpful financial assistant. How can I help you today?"
+        
+        # Check if this is an asset management command (only for assets context)
+        if context == "assets":
+            try:
+                print(f"Checking if message is an asset management command: {request.message[:100]}...")
+                # Prepare conversation history for asset command processing
+                asset_conversation_history = None
+                if request.conversation_history:
+                    asset_conversation_history = [
+                        {"role": msg.role, "content": msg.content}
+                        for msg in request.conversation_history
+                    ]
+                else:
+                    # If conversation history not provided, fetch from database
+                    try:
+                        print(f"Conversation history not in request, fetching from database...")
+                        chat_history_response = supabase_service.table("chat_messages").select("*").eq("user_id", user_id).eq("context", context).order("message_order", desc=False).limit(10).execute()
+                        if chat_history_response.data:
+                            asset_conversation_history = [
+                                {"role": msg.get("role"), "content": msg.get("content", "")}
+                                for msg in chat_history_response.data
+                            ]
+                            print(f"Fetched {len(asset_conversation_history)} messages from database for follow-up detection")
+                    except Exception as history_error:
+                        print(f"Warning: Could not fetch conversation history: {history_error}")
+                
+                asset_command_result = await asset_llm_service.process_asset_command(
+                    user_message=request.message,
+                    user_id=user_id,
+                    portfolio_data=portfolio_data,
+                    conversation_history=asset_conversation_history
+                )
+                
+                print(f"DEBUG: asset_command_result: {json.dumps(asset_command_result, indent=2, default=str)}")
+                
+                # Check if this is a request asking for missing information
+                # If so, return the response and don't continue to normal chat
+                if asset_command_result.get("action") == "none":
+                    response_msg = asset_command_result.get("response", "")
+                    # Check if the response is asking for missing information
+                    if response_msg and any(keyword in response_msg.lower() for keyword in ["need", "missing", "provide", "specify", "information"]):
+                        # This is asking for missing info - return it and stop
+                        print(f"DEBUG: Action is 'none' but response is asking for missing info. Returning response and stopping.")
+                        try:
+                            # Get current message order
+                            current_order_response = supabase_service.table("chat_messages").select("message_order").eq("user_id", user_id).eq("context", context).order("message_order", desc=True).limit(1).execute()
+                            current_order = 1
+                            if current_order_response.data and len(current_order_response.data) > 0:
+                                current_order = (current_order_response.data[0].get("message_order", 0) or 0) + 1
+                            
+                            assistant_message_data = {
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": response_msg,
+                                "message_order": current_order,
+                                "context": context
+                            }
+                            insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+                            message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+                        except Exception as e:
+                            print(f"Error saving assistant message: {e}")
+                            message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+                        
+                        return ChatResponse(
+                            response=response_msg,
+                            message_id=message_id
+                        )
+                    else:
+                        # Not asking for missing info, continue to normal chat
+                        print(f"DEBUG: Action is 'none' and not asking for missing info, continuing with normal chat flow")
+                
+                if asset_command_result.get("action") != "none":
+                    # This is an asset management command - execute it
+                    action = asset_command_result.get("action")
+                    asset_data = asset_command_result.get("asset_data", {})
+                    asset_id = asset_command_result.get("asset_id")
+                    
+                    print(f"Detected asset management action: {action}")
+                    print(f"DEBUG: asset_data: {json.dumps(asset_data, indent=2, default=str)}")
+                    print(f"DEBUG: asset_id: {asset_id}")
+                    
+                    try:
+                        if action == "add":
+                            # Create new asset
+                            from routers.assets import create_asset
+                            
+                            # Build AssetCreate object
+                            # Get currency from market (market should already be converted to currency in asset_llm_service)
+                            currency = asset_data.get("currency")
+                            asset_type = asset_data.get("asset_type")
+                            
+                            # Validate required fields are present - don't assume anything
+                            missing_fields = []
+                            
+                            if not currency:
+                                # Check if market was provided instead
+                                market = asset_data.get("market")
+                                if market:
+                                    market_lower = market.lower()
+                                    if market_lower == 'india':
+                                        currency = 'INR'
+                                    elif market_lower == 'europe':
+                                        currency = 'EUR'
+                                    else:
+                                        missing_fields.append("market (must be 'India' or 'Europe')")
+                                else:
+                                    missing_fields.append("market (India or Europe)")
+                            
+                            if asset_type == "stock":
+                                if not asset_data.get("asset_name"):
+                                    missing_fields.append("asset name")
+                                if not asset_data.get("stock_symbol"):
+                                    missing_fields.append("stock symbol")
+                                if not asset_data.get("quantity"):
+                                    missing_fields.append("quantity (number of shares)")
+                                if not asset_data.get("purchase_price"):
+                                    missing_fields.append("purchase price")
+                                if not asset_data.get("purchase_date"):
+                                    missing_fields.append("purchase date")
+                            
+                            if missing_fields:
+                                error_msg = f"I need more information to add this {asset_type} asset. Please provide: {', '.join(missing_fields)}."
+                                llm_response = f"❌ {error_msg}"
+                                
+                                # Save error response to database
+                                try:
+                                    assistant_message_data = {
+                                        "user_id": user_id,
+                                        "role": "assistant",
+                                        "content": llm_response,
+                                        "message_order": current_order,
+                                        "context": context
+                                    }
+                                    insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+                                    message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+                                except:
+                                    message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+                                
+                                return ChatResponse(
+                                    response=llm_response,
+                                    message_id=message_id
+                                )
+                            
+                            asset_create_data = {
+                                "name": asset_data.get("asset_name", "New Asset"),
+                                "type": asset_type,
+                                "currency": currency,
+                                "current_value": asset_data.get("current_value", 0),
+                                "notes": asset_data.get("notes"),
+                                "family_member_id": asset_data.get("family_member_id"),
+                            }
+                            
+                            # asset_type already set above
+                            if asset_type == "stock":
+                                asset_create_data.update({
+                                    "stock_symbol": asset_data.get("stock_symbol"),
+                                    "stock_exchange": asset_data.get("stock_exchange"),
+                                    "quantity": asset_data.get("quantity"),
+                                    "purchase_price": asset_data.get("purchase_price"),
+                                    "purchase_date": asset_data.get("purchase_date"),
+                                    "current_price": asset_data.get("current_price"),
+                                })
+                                # Calculate current_value if not provided
+                                if not asset_create_data.get("current_value") and asset_data.get("quantity") and asset_data.get("purchase_price"):
+                                    asset_create_data["current_value"] = float(asset_data.get("quantity", 0)) * float(asset_data.get("purchase_price", 0))
+                            elif asset_type == "mutual_fund":
+                                asset_create_data.update({
+                                    "mutual_fund_code": asset_data.get("mutual_fund_code"),
+                                    "fund_house": asset_data.get("fund_house"),
+                                    "nav": asset_data.get("nav"),
+                                    "units": asset_data.get("units"),
+                                    "nav_purchase_date": asset_data.get("nav_purchase_date"),
+                                })
+                                # Calculate current_value if not provided
+                                if not asset_create_data.get("current_value") and asset_data.get("units") and asset_data.get("nav"):
+                                    asset_create_data["current_value"] = float(asset_data.get("units", 0)) * float(asset_data.get("nav", 0))
+                            elif asset_type == "bank_account":
+                                asset_create_data.update({
+                                    "bank_name": asset_data.get("bank_name"),
+                                    "account_type": asset_data.get("account_type"),
+                                    "account_number": asset_data.get("account_number"),
+                                    "interest_rate": asset_data.get("interest_rate"),
+                                })
+                                if asset_data.get("current_value"):
+                                    asset_create_data["current_value"] = asset_data.get("current_value")
+                            elif asset_type == "fixed_deposit":
+                                asset_create_data.update({
+                                    "fd_number": asset_data.get("fd_number"),
+                                    "principal_amount": asset_data.get("principal_amount"),
+                                    "fd_interest_rate": asset_data.get("fd_interest_rate"),
+                                    "start_date": asset_data.get("start_date"),
+                                    "maturity_date": asset_data.get("maturity_date"),
+                                })
+                                if asset_data.get("principal_amount"):
+                                    asset_create_data["current_value"] = asset_data.get("principal_amount")
+                            elif asset_type == "insurance_policy":
+                                asset_create_data.update({
+                                    "policy_number": asset_data.get("policy_number"),
+                                    "amount_insured": asset_data.get("amount_insured"),
+                                    "issue_date": asset_data.get("issue_date"),
+                                    "date_of_maturity": asset_data.get("date_of_maturity"),
+                                    "premium": asset_data.get("premium"),
+                                    "nominee": asset_data.get("nominee"),
+                                    "premium_payment_date": asset_data.get("premium_payment_date"),
+                                })
+                                if asset_data.get("amount_insured"):
+                                    asset_create_data["current_value"] = asset_data.get("amount_insured")
+                            elif asset_type == "commodity":
+                                asset_create_data.update({
+                                    "commodity_name": asset_data.get("commodity_name"),
+                                    "form": asset_data.get("form"),
+                                    "commodity_quantity": asset_data.get("quantity") or asset_data.get("commodity_quantity"),
+                                    "commodity_units": asset_data.get("commodity_units"),
+                                    "commodity_purchase_date": asset_data.get("commodity_purchase_date") or asset_data.get("purchase_date"),
+                                    "commodity_purchase_price": asset_data.get("commodity_purchase_price") or asset_data.get("purchase_price"),
+                                })
+                                # Calculate current_value if not provided
+                                if not asset_create_data.get("current_value") and asset_data.get("quantity") and asset_data.get("commodity_purchase_price"):
+                                    asset_create_data["current_value"] = float(asset_data.get("quantity", 0)) * float(asset_data.get("commodity_purchase_price", 0))
+                            
+                            # Create asset using the assets router logic
+                            print(f"Creating asset with data: {json.dumps(asset_create_data, indent=2, default=str)}")
+                            
+                            # Ensure is_active is set
+                            if "is_active" not in asset_create_data:
+                                asset_create_data["is_active"] = True
+                            
+                            # Remove None values to avoid issues, but keep empty strings and 0 values
+                            # Only remove actual None values, not empty strings or zeros which might be valid
+                            asset_create_data = {k: v for k, v in asset_create_data.items() if v is not None or k == "notes"}
+                            
+                            try:
+                                asset_create = AssetCreate(**asset_create_data)
+                                print(f"AssetCreate object created successfully")
+                            except Exception as validation_error:
+                                print(f"Error creating AssetCreate object: {str(validation_error)}")
+                                import traceback
+                                print(f"Traceback: {traceback.format_exc()}")
+                                raise ValueError(f"Invalid asset data: {str(validation_error)}")
+                            
+                            try:
+                                asset_create.model_validate_asset_fields()  # Validate required fields
+                                print(f"Asset fields validated successfully")
+                            except Exception as validation_error:
+                                print(f"Error validating asset fields: {str(validation_error)}")
+                                import traceback
+                                print(f"Traceback: {traceback.format_exc()}")
+                                raise ValueError(f"Asset validation failed: {str(validation_error)}")
+                            
+                            # Use supabase_service to create asset directly
+                            try:
+                                asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                            except AttributeError:
+                                # Fallback for older Pydantic versions
+                                asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                            
+                            asset_dict["user_id"] = user_id
+                            
+                            # Ensure is_active is set
+                            if "is_active" not in asset_dict:
+                                asset_dict["is_active"] = True
+                            
+                            print(f"Asset dict before conversion: {json.dumps(asset_dict, indent=2, default=str)}")
+                            
+                            # Convert dates and decimals
+                            date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date', 
+                                         'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
+                            for field in date_fields:
+                                if field in asset_dict and asset_dict[field]:
+                                    if isinstance(asset_dict[field], str):
+                                        pass  # Already string
+                                    else:
+                                        asset_dict[field] = asset_dict[field].isoformat() if hasattr(asset_dict[field], 'isoformat') else asset_dict[field]
+                            
+                            decimal_fields = ['current_value', 'quantity', 'purchase_price', 'current_price',
+                                             'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+                                             'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price']
+                            for field in decimal_fields:
+                                if field in asset_dict and asset_dict[field] is not None:
+                                    asset_dict[field] = str(asset_dict[field])
+                            
+                            print(f"Asset dict after conversion: {json.dumps(asset_dict, indent=2, default=str)}")
+                            
+                            # Insert into database
+                            try:
+                                print(f"Attempting to insert asset into database with user_id: {user_id}")
+                                response = supabase_service.table("assets").insert(asset_dict).execute()
+                                print(f"Supabase insert response type: {type(response)}")
+                                print(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}")
+                                
+                                # Check response structure
+                                response_data = None
+                                if hasattr(response, 'data'):
+                                    response_data = response.data
+                                    print(f"Response.data type: {type(response_data)}, value: {response_data}")
+                                elif hasattr(response, '__dict__'):
+                                    print(f"Response dict: {response.__dict__}")
+                                
+                                # Also check for errors
+                                response_error = None
+                                if hasattr(response, 'error'):
+                                    response_error = response.error
+                                    print(f"Response.error: {response_error}")
+                                
+                                if response_error:
+                                    error_msg = f"Supabase error: {response_error}"
+                                    print(f"ERROR: {error_msg}")
+                                    llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
+                                elif response_data and isinstance(response_data, list) and len(response_data) > 0:
+                                    created_asset = response_data[0]
+                                    asset_id = created_asset.get('id')
+                                    print(f"Successfully created asset with ID: {asset_id}")
+                                    
+                                    # Verify the asset was actually created by querying it back
+                                    verify_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
+                                    if verify_response.data and len(verify_response.data) > 0:
+                                        llm_response = f"✅ Successfully added {asset_type} asset: {asset_create_data.get('name')}. Asset ID: {asset_id}"
+                                    else:
+                                        error_msg = "Asset was inserted but could not be verified"
+                                        print(f"ERROR: {error_msg}")
+                                        llm_response = f"❌ {error_msg}. Please check the database."
+                                elif response_data is None or (isinstance(response_data, list) and len(response_data) == 0):
+                                    error_msg = "No data returned from Supabase insert - asset may not have been created"
+                                    print(f"ERROR: {error_msg}")
+                                    print(f"Full response object: {response}")
+                                    llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
+                                else:
+                                    error_msg = f"Unexpected response format: {type(response_data)}"
+                                    print(f"ERROR: {error_msg}")
+                                    llm_response = f"❌ Failed to create asset: {error_msg}. Please check the logs for details."
+                                    
+                            except Exception as insert_error:
+                                error_msg = str(insert_error)
+                                print(f"ERROR inserting asset into database: {error_msg}")
+                                import traceback
+                                print(f"Traceback: {traceback.format_exc()}")
+                                
+                                # Check for RLS errors
+                                if "row-level security" in error_msg.lower() or "42501" in error_msg:
+                                    llm_response = "❌ Failed to create asset: Database permission error. Please check your Supabase configuration."
+                                elif "foreign key" in error_msg.lower() or "constraint" in error_msg.lower():
+                                    llm_response = f"❌ Failed to create asset: Data validation error. {error_msg}"
+                                else:
+                                    llm_response = f"❌ Failed to create asset: {error_msg}. Please check the provided information and try again."
+                        
+                        elif action == "delete":
+                            # Delete asset
+                            if not asset_id:
+                                llm_response = "❌ Could not find the asset to delete. Please specify the asset name or ID more clearly."
+                            else:
+                                # Verify asset belongs to user
+                                asset_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
+                                if not asset_response.data:
+                                    llm_response = f"❌ Asset with ID {asset_id} not found or you don't have permission to delete it."
+                                else:
+                                    asset_name = asset_response.data[0].get("name", "Unknown")
+                                    delete_response = supabase_service.table("assets").delete().eq("id", asset_id).eq("user_id", user_id).execute()
+                                    if delete_response.data:
+                                        llm_response = f"✅ Successfully deleted asset: {asset_name}"
+                                    else:
+                                        llm_response = f"❌ Failed to delete asset: {asset_name}"
+                        
+                        elif action == "update":
+                            # Update asset
+                            if not asset_id:
+                                llm_response = "❌ Could not find the asset to update. Please specify the asset name or ID more clearly."
+                            else:
+                                # Verify asset belongs to user
+                                asset_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
+                                if not asset_response.data:
+                                    llm_response = f"❌ Asset with ID {asset_id} not found or you don't have permission to update it."
+                                else:
+                                    # Build update data
+                                    update_data = {}
+                                    if asset_data.get("asset_name"):
+                                        update_data["name"] = asset_data.get("asset_name")
+                                    if asset_data.get("current_value") is not None:
+                                        update_data["current_value"] = str(asset_data.get("current_value"))
+                                    if asset_data.get("currency"):
+                                        update_data["currency"] = asset_data.get("currency")
+                                    if asset_data.get("notes") is not None:
+                                        update_data["notes"] = asset_data.get("notes")
+                                    
+                                    # Add type-specific update fields
+                                    asset_type = asset_response.data[0].get("type")
+                                    if asset_type == "stock":
+                                        if asset_data.get("quantity") is not None:
+                                            update_data["quantity"] = str(asset_data.get("quantity"))
+                                        if asset_data.get("purchase_price") is not None:
+                                            update_data["purchase_price"] = str(asset_data.get("purchase_price"))
+                                        if asset_data.get("current_price") is not None:
+                                            update_data["current_price"] = str(asset_data.get("current_price"))
+                                        if asset_data.get("purchase_date"):
+                                            update_data["purchase_date"] = asset_data.get("purchase_date")
+                                    elif asset_type == "mutual_fund":
+                                        if asset_data.get("units") is not None:
+                                            update_data["units"] = str(asset_data.get("units"))
+                                        if asset_data.get("nav") is not None:
+                                            update_data["nav"] = str(asset_data.get("nav"))
+                                    elif asset_type == "bank_account":
+                                        if asset_data.get("bank_name"):
+                                            update_data["bank_name"] = asset_data.get("bank_name")
+                                        if asset_data.get("account_type"):
+                                            update_data["account_type"] = asset_data.get("account_type")
+                                        if asset_data.get("current_value") is not None:
+                                            update_data["current_value"] = str(asset_data.get("current_value"))
+                                    
+                                    # Convert dates and decimals
+                                    date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date',
+                                                 'issue_date', 'date_of_maturity', 'premium_payment_date', 'commodity_purchase_date']
+                                    for field in date_fields:
+                                        if field in update_data and update_data[field]:
+                                            if isinstance(update_data[field], str):
+                                                pass
+                                            else:
+                                                update_data[field] = update_data[field].isoformat() if hasattr(update_data[field], 'isoformat') else update_data[field]
+                                    
+                                    decimal_fields = ['current_value', 'quantity', 'purchase_price', 'current_price',
+                                                     'nav', 'units', 'interest_rate', 'principal_amount', 'fd_interest_rate',
+                                                     'amount_insured', 'premium', 'commodity_quantity', 'commodity_purchase_price']
+                                    for field in decimal_fields:
+                                        if field in update_data and update_data[field] is not None:
+                                            update_data[field] = str(update_data[field])
+                                    
+                                    update_response = supabase_service.table("assets").update(update_data).eq("id", asset_id).eq("user_id", user_id).execute()
+                                    if update_response.data:
+                                        asset_name = update_response.data[0].get("name", "Unknown")
+                                        llm_response = f"✅ Successfully updated asset: {asset_name}"
+                                    else:
+                                        llm_response = "❌ Failed to update asset. Please check the provided information."
+                        
+                        # Save assistant response to database
+                        try:
+                            assistant_message_data = {
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": llm_response,
+                                "message_order": current_order,
+                                "context": context
+                            }
+                            insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+                            message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+                            print(f"Successfully saved assistant message to database. Message ID: {message_id}")
+                        except Exception as e:
+                            print(f"ERROR: Could not save assistant message to database: {str(e)}")
+                            message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+                        
+                        return ChatResponse(
+                            response=llm_response,
+                            message_id=message_id
+                        )
+                    
+                    except Exception as exec_error:
+                        import traceback
+                        error_details = traceback.format_exc()
+                        print(f"Error executing asset command: {str(exec_error)}")
+                        print(f"Traceback: {error_details}")
+                        error_response = f"❌ Error executing asset operation: {str(exec_error)}. Please check the information and try again."
+                        
+                        # Save error response
+                        try:
+                            assistant_message_data = {
+                                "user_id": user_id,
+                                "role": "assistant",
+                                "content": error_response,
+                                "message_order": current_order,
+                                "context": context
+                            }
+                            insert_response = supabase_service.table("chat_messages").insert(assistant_message_data).execute()
+                            message_id = insert_response.data[0]["id"] if insert_response.data else f"msg_{user_id}_{uuid.uuid4().hex}"
+                        except:
+                            message_id = f"msg_{user_id}_{uuid.uuid4().hex}"
+                        
+                        return ChatResponse(
+                            response=error_response,
+                            message_id=message_id
+                        )
+                else:
+                    print(f"DEBUG: Action is 'none', continuing with normal chat flow")
+                
+                # If action is "none", continue with normal LLM chat flow
+                print(f"Message is not an asset management command, proceeding with normal chat flow")
+                
+            except Exception as asset_llm_error:
+                # If asset LLM service fails, continue with normal chat flow
+                import traceback
+                print(f"Warning: Asset LLM service error (continuing with normal chat): {str(asset_llm_error)}")
+                print(f"Traceback: {traceback.format_exc()}")
         
         # Get LLM response
         # Log prompt size for debugging

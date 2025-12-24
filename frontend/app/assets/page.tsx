@@ -399,47 +399,47 @@ export default function AssetsPage() {
 
   // Note: Family member net worth calculation removed - now handled in Profile page
 
-  // Fetch assets from database on component mount
-  useEffect(() => {
-    const fetchAssets = async () => {
-      try {
-        const accessToken = localStorage.getItem("access_token");
-        if (!accessToken) {
-          console.warn("No access token found, redirecting to login");
-          setIsLoadingAssets(false);
-          window.location.href = "/";
-          return;
+  // Function to fetch assets - made accessible for refresh callback
+  const fetchAssets = async () => {
+    try {
+      setIsLoadingAssets(true);
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) {
+        console.warn("No access token found, redirecting to login");
+        setIsLoadingAssets(false);
+        window.location.href = "/";
+        return;
+      }
+
+      // Fetch all assets
+      const response = await fetch("/api/assets", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (response.ok) {
+        const assets = await response.json();
+        console.log(`Fetched ${assets.length} assets from database`);
+        if (assets.length > 0) {
+          console.log("Sample asset:", assets[0]);
         }
-
-        // Fetch all assets
-        const response = await fetch("/api/assets", {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-
-        if (response.ok) {
-          const assets = await response.json();
-          console.log(`Fetched ${assets.length} assets from database`);
-          if (assets.length > 0) {
-            console.log("Sample asset:", assets[0]);
-          }
-          
-          // Separate assets by market (based on currency)
-          const indiaStocks: typeof stocks.india = [];
-          const europeStocks: typeof stocks.europe = [];
-          const indiaBankAccounts: typeof bankAccounts.india = [];
-          const europeBankAccounts: typeof bankAccounts.europe = [];
-          const indiaMutualFunds: typeof mutualFunds.india = [];
-          const europeMutualFunds: typeof mutualFunds.europe = [];
-          const indiaFixedDeposits: typeof fixedDeposits.india = [];
-          const europeFixedDeposits: typeof fixedDeposits.europe = [];
-          const indiaInsurancePolicies: typeof insurancePolicies.india = [];
-          const europeInsurancePolicies: typeof insurancePolicies.europe = [];
-          const indiaCommodities: typeof commodities.india = [];
-          const europeCommodities: typeof commodities.europe = [];
-          
-          assets.forEach((asset: any) => {
+        
+        // Separate assets by market (based on currency)
+        const indiaStocks: typeof stocks.india = [];
+        const europeStocks: typeof stocks.europe = [];
+        const indiaBankAccounts: typeof bankAccounts.india = [];
+        const europeBankAccounts: typeof bankAccounts.europe = [];
+        const indiaMutualFunds: typeof mutualFunds.india = [];
+        const europeMutualFunds: typeof mutualFunds.europe = [];
+        const indiaFixedDeposits: typeof fixedDeposits.india = [];
+        const europeFixedDeposits: typeof fixedDeposits.europe = [];
+        const indiaInsurancePolicies: typeof insurancePolicies.india = [];
+        const europeInsurancePolicies: typeof insurancePolicies.europe = [];
+        const indiaCommodities: typeof commodities.india = [];
+        const europeCommodities: typeof commodities.europe = [];
+        
+        assets.forEach((asset: any) => {
             const currency = asset.currency || "USD";
             const market: Market = currency === "INR" ? "india" : "europe";
             
@@ -624,18 +624,20 @@ export default function AssetsPage() {
                                 europeFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0) +
                                 europeCommodities.reduce((sum, c) => sum + c.currentValue, 0);
           
-          setNetWorth({
-            india: indiaNetWorth,
-            europe: europeNetWorth,
-          });
-        }
-      } catch (error) {
-        console.error("Error fetching assets:", error);
-      } finally {
-        setIsLoadingAssets(false);
+        setNetWorth({
+          india: indiaNetWorth,
+          europe: europeNetWorth,
+        });
       }
-    };
+    } catch (error) {
+      console.error("Error fetching assets:", error);
+    } finally {
+      setIsLoadingAssets(false);
+    }
+  };
 
+  // Fetch assets from database on component mount
+  useEffect(() => {
     fetchAssets();
     fetchFamilyMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2577,7 +2579,7 @@ export default function AssetsPage() {
               </div>
             </div>
           }
-          right={<ChatWindow context="assets" />}
+          right={<ChatWindow context="assets" onAssetCreated={fetchAssets} />}
           defaultLeftWidth={60}
         />
       </div>

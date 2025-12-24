@@ -471,3 +471,67 @@ async def get_stock_price(asset_id: str, current_user=Depends(get_current_user))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get stock price: {str(e)}")
 
+
+@router.post("/fix-currency/{asset_id}")
+async def fix_asset_currency(asset_id: str, current_user=Depends(get_current_user)):
+    """Fix currency for an asset based on stock symbol/name (helper endpoint)"""
+    try:
+        # Extract user_id safely
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
+        
+        # Get the asset
+        asset_response = supabase_service.table("assets").select("*").eq("id", asset_id).eq("user_id", user_id).execute()
+        if not asset_response.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        
+        asset = asset_response.data[0]
+        
+        # Only fix stocks
+        if asset.get("type") != "stock":
+            raise HTTPException(status_code=400, detail="Currency fix is only available for stocks")
+        
+        stock_symbol = asset.get("stock_symbol", "").upper()
+        asset_name = asset.get("name", "").lower()
+        current_currency = asset.get("currency", "USD")
+        
+        # Indian stock indicators
+        indian_stocks = ["reliance", "tcs", "infosys", "hdfc", "icici", "sbi", "wipro", "bharti", "itc", "lt"]
+        
+        # Check if it's an Indian stock
+        is_indian = (
+            any(ind in asset_name for ind in indian_stocks) or
+            any(ind in stock_symbol.lower() for ind in indian_stocks) or
+            stock_symbol.endswith(".NS") or stock_symbol.endswith(".BO")
+        )
+        
+        new_currency = "INR" if is_indian else current_currency
+        
+        if new_currency != current_currency:
+            # Update the currency
+            update_response = supabase_service.table("assets").update({"currency": new_currency}).eq("id", asset_id).eq("user_id", user_id).execute()
+            if update_response.data:
+                return {
+                    "message": f"Currency updated from {current_currency} to {new_currency}",
+                    "asset_id": asset_id,
+                    "old_currency": current_currency,
+                    "new_currency": new_currency
+                }
+            else:
+                raise HTTPException(status_code=500, detail="Failed to update currency")
+        else:
+            return {
+                "message": f"Currency is already correct: {current_currency}",
+                "asset_id": asset_id,
+                "currency": current_currency
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fix currency: {str(e)}")
+
