@@ -452,7 +452,9 @@ export default function ExpensesPage() {
   const getYears = () => {
     const currentYear = new Date().getFullYear();
     const years = [];
-    for (let i = currentYear; i >= currentYear - 5; i--) {
+    const endYear = 2030;
+    const startYear = currentYear - 5;
+    for (let i = endYear; i >= startYear; i--) {
       years.push(i);
     }
     return years;
