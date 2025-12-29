@@ -1,6 +1,23 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import ResizablePanel from "@/components/ResizablePanel";
 import ChatWindow from "@/components/ChatWindow";
 
@@ -59,6 +76,45 @@ const formatDateDDMMYYYY = (dateString: string): string => {
   }
 };
 
+// Sortable Item Component
+function SortableItem({ 
+  id, 
+  children, 
+  dragHandle 
+}: { 
+  id: string; 
+  children: React.ReactNode;
+  dragHandle?: React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className="relative">
+      {dragHandle && (
+        <div className="absolute left-0 top-0 h-full flex items-center cursor-grab active:cursor-grabbing z-10" {...attributes} {...listeners}>
+          {dragHandle}
+        </div>
+      )}
+      <div className={dragHandle ? "pl-8" : ""}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function AssetsPage() {
   const [selectedMarket, setSelectedMarket] = useState<Market>("india");
   const [isAddAssetModalOpen, setIsAddAssetModalOpen] = useState(false);
@@ -70,6 +126,9 @@ export default function AssetsPage() {
   const [editingFixedDepositId, setEditingFixedDepositId] = useState<string | null>(null);
   const [editingInsurancePolicyId, setEditingInsurancePolicyId] = useState<string | null>(null);
   const [editingCommodityId, setEditingCommodityId] = useState<string | null>(null);
+  
+  // Asset order state - stores order by asset type and market
+  const [assetOrder, setAssetOrder] = useState<Record<string, string[]>>({});
   
   // Family members state (for filtering only - management moved to Profile page)
   const [familyMembers, setFamilyMembers] = useState<Array<{
@@ -320,13 +379,217 @@ export default function AssetsPage() {
     });
   };
   
-  // Get filtered assets for display
-  const getFilteredStocks = (market: Market) => filterAssetsByFamilyMember(stocks[market]);
-  const getFilteredBankAccounts = (market: Market) => filterAssetsByFamilyMember(bankAccounts[market]);
-  const getFilteredMutualFunds = (market: Market) => filterAssetsByFamilyMember(mutualFunds[market]);
-  const getFilteredFixedDeposits = (market: Market) => filterAssetsByFamilyMember(fixedDeposits[market]);
-  const getFilteredCommodities = (market: Market) => filterAssetsByFamilyMember(commodities[market]);
-  const getFilteredInsurancePolicies = (market: Market) => filterAssetsByFamilyMember(insurancePolicies[market]);
+  // Helper function to get order key for asset type and market
+  const getOrderKey = (assetType: string, market: Market) => `${assetType}_${market}`;
+  
+  // Helper function to get ordered assets
+  const getOrderedAssets = <T extends { id: string }>(
+    assets: T[],
+    assetType: string,
+    market: Market
+  ): T[] => {
+    const orderKey = getOrderKey(assetType, market);
+    const order = assetOrder[orderKey] || [];
+    
+    // If no order exists, return assets as-is
+    if (order.length === 0) {
+      return assets;
+    }
+    
+    // Sort assets according to order
+    const ordered = [...assets].sort((a, b) => {
+      const indexA = order.indexOf(a.id);
+      const indexB = order.indexOf(b.id);
+      
+      // If both are in order, sort by order
+      if (indexA !== -1 && indexB !== -1) {
+        return indexA - indexB;
+      }
+      // If only A is in order, A comes first
+      if (indexA !== -1) return -1;
+      // If only B is in order, B comes first
+      if (indexB !== -1) return 1;
+      // If neither is in order, maintain original order
+      return 0;
+    });
+    
+    return ordered;
+  };
+  
+  // Helper function to save order
+  const saveOrder = (assetType: string, market: Market, orderedIds: string[]) => {
+    const orderKey = getOrderKey(assetType, market);
+    setAssetOrder((prev) => ({
+      ...prev,
+      [orderKey]: orderedIds,
+    }));
+    // Save to localStorage
+    const storageKey = `asset_order_${orderKey}`;
+    localStorage.setItem(storageKey, JSON.stringify(orderedIds));
+  };
+  
+  // Helper function to load order from localStorage
+  const loadOrder = (assetType: string, market: Market): string[] => {
+    const orderKey = getOrderKey(assetType, market);
+    const storageKey = `asset_order_${orderKey}`;
+    const stored = localStorage.getItem(storageKey);
+    return stored ? JSON.parse(stored) : [];
+  };
+  
+  // Helper function to move asset up
+  const moveAssetUp = <T extends { id: string }>(
+    filteredAssets: T[],
+    assetId: string,
+    assetType: string,
+    market: Market,
+    setAssets: (updater: (prev: Record<Market, T[]>) => Record<Market, T[]>) => void
+  ) => {
+    const currentIndex = filteredAssets.findIndex(a => a.id === assetId);
+    if (currentIndex <= 0) return; // Already at top
+    
+    // Get the order key and current order
+    const orderKey = getOrderKey(assetType, market);
+    const currentOrder = assetOrder[orderKey] || filteredAssets.map(a => a.id);
+    
+    // Find the actual indices in the order array
+    const oldIndex = currentOrder.indexOf(assetId);
+    const newIndex = oldIndex - 1;
+    
+    if (oldIndex > 0) {
+      const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+      saveOrder(assetType, market, newOrder);
+      
+      // Update the actual state based on the new order
+      setAssets((prev) => {
+        const marketAssets = [...prev[market]];
+        // Reorder based on the new order
+        const reordered = newOrder
+          .map(id => marketAssets.find(a => a.id === id))
+          .filter((a): a is T => a !== undefined)
+          .concat(marketAssets.filter(a => !newOrder.includes(a.id)));
+        
+        return {
+          ...prev,
+          [market]: reordered,
+        };
+      });
+    }
+  };
+  
+  // Helper function to move asset down
+  const moveAssetDown = <T extends { id: string }>(
+    filteredAssets: T[],
+    assetId: string,
+    assetType: string,
+    market: Market,
+    setAssets: (updater: (prev: Record<Market, T[]>) => Record<Market, T[]>) => void
+  ) => {
+    const currentIndex = filteredAssets.findIndex(a => a.id === assetId);
+    if (currentIndex >= filteredAssets.length - 1) return; // Already at bottom
+    
+    // Get the order key and current order
+    const orderKey = getOrderKey(assetType, market);
+    const currentOrder = assetOrder[orderKey] || filteredAssets.map(a => a.id);
+    
+    // Find the actual indices in the order array
+    const oldIndex = currentOrder.indexOf(assetId);
+    const newIndex = oldIndex + 1;
+    
+    if (oldIndex < currentOrder.length - 1) {
+      const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+      saveOrder(assetType, market, newOrder);
+      
+      // Update the actual state based on the new order
+      setAssets((prev) => {
+        const marketAssets = [...prev[market]];
+        // Reorder based on the new order
+        const reordered = newOrder
+          .map(id => marketAssets.find(a => a.id === id))
+          .filter((a): a is T => a !== undefined)
+          .concat(marketAssets.filter(a => !newOrder.includes(a.id)));
+        
+        return {
+          ...prev,
+          [market]: reordered,
+        };
+      });
+    }
+  };
+  
+  // Handle drag end
+  const handleDragEnd = (event: DragEndEvent, assetType: string, market: Market) => {
+    const { active, over } = event;
+    
+    if (!over || active.id === over.id) {
+      return;
+    }
+    
+    const orderKey = getOrderKey(assetType, market);
+    const currentOrder = assetOrder[orderKey] || [];
+    
+    const oldIndex = currentOrder.indexOf(active.id as string);
+    const newIndex = currentOrder.indexOf(over.id as string);
+    
+    if (oldIndex !== -1 && newIndex !== -1) {
+      const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+      saveOrder(assetType, market, newOrder);
+    }
+  };
+  
+  // Get filtered assets for display (with ordering applied)
+  const getFilteredStocks = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(stocks[market]);
+    return getOrderedAssets(filtered, "stocks", market);
+  };
+  const getFilteredBankAccounts = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(bankAccounts[market]);
+    return getOrderedAssets(filtered, "bank_accounts", market);
+  };
+  const getFilteredMutualFunds = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(mutualFunds[market]);
+    return getOrderedAssets(filtered, "mutual_funds", market);
+  };
+  const getFilteredFixedDeposits = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(fixedDeposits[market]);
+    return getOrderedAssets(filtered, "fixed_deposits", market);
+  };
+  const getFilteredCommodities = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(commodities[market]);
+    return getOrderedAssets(filtered, "commodities", market);
+  };
+  const getFilteredInsurancePolicies = (market: Market) => {
+    const filtered = filterAssetsByFamilyMember(insurancePolicies[market]);
+    return getOrderedAssets(filtered, "insurance_policies", market);
+  };
+  
+  // Initialize drag and drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+  
+  // Initialize order from localStorage when assets are loaded
+  useEffect(() => {
+    const assetTypes = ["stocks", "bank_accounts", "mutual_funds", "fixed_deposits", "commodities", "insurance_policies"];
+    const markets: Market[] = ["india", "europe"];
+    const initialOrder: Record<string, string[]> = {};
+    
+    assetTypes.forEach(assetType => {
+      markets.forEach(market => {
+        const orderKey = getOrderKey(assetType, market);
+        const loadedOrder = loadOrder(assetType, market);
+        if (loadedOrder.length > 0) {
+          initialOrder[orderKey] = loadedOrder;
+        }
+      });
+    });
+    
+    if (Object.keys(initialOrder).length > 0) {
+      setAssetOrder(initialOrder);
+    }
+  }, []);
   
   // Helper function to get family member name from familyMemberId
   const getFamilyMemberName = (familyMemberId?: string): string => {
@@ -1429,154 +1692,245 @@ export default function AssetsPage() {
                                 + Add Stock
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredStocks(selectedMarket).map((stock) => (
-                                <div
-                                  key={stock.id}
-                                  className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between mb-3">
-                                    <div className="flex-1">
-                                      <div className="flex items-center gap-2 mb-2">
-                                        <h4 className="text-sm font-semibold text-gray-900">
-                                          {stock.name}
-                                        </h4>
-                                        {selectedFamilyMemberFilter === "all" && (
-                                          <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                            {getFamilyMemberName(stock.familyMemberId)}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                        <span>
-                                          Avg. Price: {currentMarket.symbol}
-                                          {stock.price.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </span>
-                                        <span>Qty: {stock.quantity}</span>
-                                        {stock.purchaseDate && (
-                                          <span>
-                                            Purchase Date: {formatDateDDMMYYYY(stock.purchaseDate)}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center space-x-1">
-                                      <button
-                                        onClick={() => {
-                                          setEditingStockId(stock.id);
-                                          setSelectedAssetType("stock");
-                                          setStockName(stock.name);
-                                          // Stock name already set above
-                                          setStockSymbol(stock.symbol || ""); // Load existing symbol
-                                          setStockPrice(stock.price.toString());
-                                          setStockQuantity(stock.quantity.toString());
-                                          setStockPurchaseDate(stock.purchaseDate || new Date().toISOString().split('T')[0]);
-                                          setStockCurrentWorth(stock.actualWorth.toString()); // Load current worth
-                                          setSelectedFamilyMemberId(stock.familyMemberId);
-                                          setIsAddAssetModalOpen(true);
-                                        }}
-                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                        title="Edit stock"
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
+                                
+                                const filtered = getFilteredStocks(selectedMarket);
+                                const orderKey = getOrderKey("stocks", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(s => s.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("stocks", selectedMarket, newOrder);
+                                  
+                                  // Update stocks state to match the new order
+                                  setStocks((prev) => {
+                                    const marketStocks = [...prev[selectedMarket]];
+                                    // Reorder based on the new order, preserving items not in order
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketStocks.find(s => s.id === id))
+                                      .filter((s): s is typeof marketStocks[0] => s !== undefined);
+                                    const unordered = marketStocks.filter(s => !orderedIds.has(s.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredStocks(selectedMarket).map(s => s.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredStocks(selectedMarket).map((stock, index) => {
+                                    const filteredStocks = getFilteredStocks(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredStocks.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={stock.id}
+                                        id={stock.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
                                       >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                          />
-                                        </svg>
-                                      </button>
-                                      <button
-                                        onClick={async () => {
-                                          if (window.confirm(`Are you sure you want to delete ${stock.name}? This action cannot be undone.`)) {
-                                            const dbId = stock.dbId || stock.id;
-                                            const deleted = await deleteAssetFromDatabase(dbId);
-                                            
-                                            if (deleted) {
-                                              // Remove from state
-                                              setStocks((prev) => {
-                                                const updatedStocks = prev[selectedMarket].filter(s => s.id !== stock.id);
-                                                
-                                                // Recalculate net worth
-                                                const updatedBankAccounts = bankAccounts[selectedMarket];
-                                                const updatedMutualFunds = mutualFunds[selectedMarket];
-                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
-                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const updatedCommodities = commodities[selectedMarket];
-                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                
-                                                setNetWorth((prev) => ({
-                                                  ...prev,
-                                                  [selectedMarket]: newNetWorth,
-                                                }));
-                                                
-                                                return {
-                                                  ...prev,
-                                                  [selectedMarket]: updatedStocks,
-                                                };
-                                              });
-                                            } else {
-                                              alert("Failed to delete stock. Please try again.");
-                                            }
-                                          }
-                                        }}
-                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                        title="Delete stock"
-                                      >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                          />
-                                        </svg>
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                    <div>
-                                      <p className="text-xs text-gray-500 mb-1">Total Amount Invested</p>
-                                      <p className="text-sm font-semibold text-gray-900">
-                                        {currentMarket.symbol}
-                                        {stock.totalInvested.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}
-                                      </p>
-                                    </div>
-                                    <div className="text-right">
-                                      <p className="text-xs text-gray-500 mb-1">Actual Worth</p>
-                                      <p className="text-sm font-semibold text-gray-900">
-                                        {currentMarket.symbol}
-                                        {stock.actualWorth.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}
-                                      </p>
-                                    </div>
-                                  </div>
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
+                                          <div className="flex items-start justify-between mb-3">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-2">
+                                                <h4 className="text-sm font-semibold text-gray-900">
+                                                  {stock.name}
+                                                </h4>
+                                                {selectedFamilyMemberFilter === "all" && (
+                                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                    {getFamilyMemberName(stock.familyMemberId)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                <span>
+                                                  Avg. Price: {currentMarket.symbol}
+                                                  {stock.price.toLocaleString("en-IN", {
+                                                    minimumFractionDigits: 2,
+                                                    maximumFractionDigits: 2,
+                                                  })}
+                                                </span>
+                                                <span>Qty: {stock.quantity}</span>
+                                                {stock.purchaseDate && (
+                                                  <span>
+                                                    Purchase Date: {formatDateDDMMYYYY(stock.purchaseDate)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center space-x-1">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredStocks,
+                                                    stock.id,
+                                                    "stocks",
+                                                    selectedMarket,
+                                                    setStocks
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredStocks,
+                                                    stock.id,
+                                                    "stocks",
+                                                    selectedMarket,
+                                                    setStocks
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingStockId(stock.id);
+                                                  setSelectedAssetType("stock");
+                                                  setStockName(stock.name);
+                                                  // Stock name already set above
+                                                  setStockSymbol(stock.symbol || ""); // Load existing symbol
+                                                  setStockPrice(stock.price.toString());
+                                                  setStockQuantity(stock.quantity.toString());
+                                                  setStockPurchaseDate(stock.purchaseDate || new Date().toISOString().split('T')[0]);
+                                                  setStockCurrentWorth(stock.actualWorth.toString()); // Load current worth
+                                                  setSelectedFamilyMemberId(stock.familyMemberId);
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit stock"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${stock.name}? This action cannot be undone.`)) {
+                                                    const dbId = stock.dbId || stock.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setStocks((prev) => {
+                                                        const updatedStocks = prev[selectedMarket].filter(s => s.id !== stock.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const updatedCommodities = commodities[selectedMarket];
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedStocks,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete stock. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete stock"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Total Amount Invested</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {stock.totalInvested.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                            <div className="text-right">
+                                              <p className="text-xs text-gray-500 mb-1">Actual Worth</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {stock.actualWorth.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </SortableItem>
+                                    );
+                                  })}
                                 </div>
-                              ))}
-                            </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
@@ -1629,133 +1983,224 @@ export default function AssetsPage() {
                                 + Add Bank Account
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredBankAccounts(selectedMarket).map((account) => (
-                                <div
-                                  key={account.id}
-                                  className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between mb-3">
-                                    <div className="flex-1">
-                                      <div className="flex items-center gap-2 mb-2">
-                                        <h4 className="text-sm font-semibold text-gray-900">
-                                          {account.bankName}
-                                        </h4>
-                                        {selectedFamilyMemberFilter === "all" && (
-                                          <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                            {getFamilyMemberName(account.familyMemberId)}
-                                          </span>
-                                        )}
-                                      </div>
-                                      {account.accountNumber && (
-                                        <p className="text-xs text-gray-600 mb-1">
-                                          Account: {account.accountNumber}
-                                        </p>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center space-x-1">
-                                      <button
-                                        onClick={() => {
-                                          setEditingBankAccountId(account.id);
-                                          setSelectedAssetType("bank_account");
-                                          setBankName(account.bankName);
-                                          setAccountNumber(account.accountNumber || "");
-                                          setBankBalance(account.balance.toString());
-                                          setSelectedFamilyMemberId(account.familyMemberId);
-                                          setIsAddAssetModalOpen(true);
-                                        }}
-                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                        title="Edit bank account"
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
+                                
+                                const filtered = getFilteredBankAccounts(selectedMarket);
+                                const orderKey = getOrderKey("bank_accounts", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(a => a.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("bank_accounts", selectedMarket, newOrder);
+                                  
+                                  // Update bank accounts state to match the new order
+                                  setBankAccounts((prev) => {
+                                    const marketAccounts = [...prev[selectedMarket]];
+                                    // Reorder based on the new order, preserving items not in order
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketAccounts.find(a => a.id === id))
+                                      .filter((a): a is typeof marketAccounts[0] => a !== undefined);
+                                    const unordered = marketAccounts.filter(a => !orderedIds.has(a.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredBankAccounts(selectedMarket).map(a => a.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredBankAccounts(selectedMarket).map((account, index) => {
+                                    const filteredAccounts = getFilteredBankAccounts(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredAccounts.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={account.id}
+                                        id={account.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
                                       >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                          />
-                                        </svg>
-                                      </button>
-                                      <button
-                                        onClick={async () => {
-                                          if (window.confirm(`Are you sure you want to delete ${account.bankName}? This action cannot be undone.`)) {
-                                            const dbId = account.dbId || account.id;
-                                            const deleted = await deleteAssetFromDatabase(dbId);
-                                            
-                                            if (deleted) {
-                                              // Remove from state
-                                              setBankAccounts((prev) => {
-                                                const updatedAccounts = prev[selectedMarket].filter(a => a.id !== account.id);
-                                                
-                                                // Recalculate net worth
-                                                const updatedStocks = stocks[selectedMarket];
-                                                const updatedMutualFunds = mutualFunds[selectedMarket];
-                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                const bankAccountsTotal = updatedAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
-                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const updatedCommodities = commodities[selectedMarket];
-                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                
-                                                setNetWorth((prev) => ({
-                                                  ...prev,
-                                                  [selectedMarket]: newNetWorth,
-                                                }));
-                                                
-                                                return {
-                                                  ...prev,
-                                                  [selectedMarket]: updatedAccounts,
-                                                };
-                                              });
-                                            } else {
-                                              alert("Failed to delete bank account. Please try again.");
-                                            }
-                                          }
-                                        }}
-                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                        title="Delete bank account"
-                                      >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                          />
-                                        </svg>
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                    <div>
-                                      <p className="text-xs text-gray-500 mb-1">Balance</p>
-                                      <p className="text-lg font-semibold text-gray-900">
-                                        {currentMarket.symbol}
-                                        {account.balance.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}
-                                      </p>
-                                      <p className="text-xs text-gray-500 mt-1">
-                                        {currentMarket.currency}
-                                      </p>
-                                    </div>
-                                  </div>
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
+                                          <div className="flex items-start justify-between mb-3">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-2">
+                                                <h4 className="text-sm font-semibold text-gray-900">
+                                                  {account.bankName}
+                                                </h4>
+                                                {selectedFamilyMemberFilter === "all" && (
+                                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                    {getFamilyMemberName(account.familyMemberId)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              {account.accountNumber && (
+                                                <p className="text-xs text-gray-600 mb-1">
+                                                  Account: {account.accountNumber}
+                                                </p>
+                                              )}
+                                            </div>
+                                            <div className="flex items-center space-x-1">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredAccounts,
+                                                    account.id,
+                                                    "bank_accounts",
+                                                    selectedMarket,
+                                                    setBankAccounts
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredAccounts,
+                                                    account.id,
+                                                    "bank_accounts",
+                                                    selectedMarket,
+                                                    setBankAccounts
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingBankAccountId(account.id);
+                                                  setSelectedAssetType("bank_account");
+                                                  setBankName(account.bankName);
+                                                  setAccountNumber(account.accountNumber || "");
+                                                  setBankBalance(account.balance.toString());
+                                                  setSelectedFamilyMemberId(account.familyMemberId);
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit bank account"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${account.bankName}? This action cannot be undone.`)) {
+                                                    const dbId = account.dbId || account.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setBankAccounts((prev) => {
+                                                        const updatedAccounts = prev[selectedMarket].filter(a => a.id !== account.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedStocks = stocks[selectedMarket];
+                                                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const updatedCommodities = commodities[selectedMarket];
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedAccounts,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete bank account. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete bank account"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Balance</p>
+                                              <p className="text-lg font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {account.balance.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                              <p className="text-xs text-gray-500 mt-1">
+                                                {currentMarket.currency}
+                                              </p>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </SortableItem>
+                                    );
+                                  })}
                                 </div>
-                              ))}
-                            </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
@@ -1808,147 +2253,237 @@ export default function AssetsPage() {
                                 + Add Mutual Fund
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredMutualFunds(selectedMarket).map((fund) => (
-                                <div
-                                  key={fund.id}
-                                  className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between mb-3">
-                                    <div className="flex-1">
-                                      <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                        {fund.fundName}
-                                      </h4>
-                                      <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                        <span>
-                                          NAV: {currentMarket.symbol}
-                                          {fund.nav.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </span>
-                                        <span>Units: {fund.units.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}</span>
-                                        {fund.purchaseDate && (
-                                          <span>
-                                            Purchase Date: {formatDateDDMMYYYY(fund.purchaseDate)}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center space-x-1">
-                                      <button
-                                        onClick={() => {
-                                          setEditingMutualFundId(fund.id);
-                                          setSelectedAssetType("mutual_fund");
-                                          setFundName(fund.fundName);
-                                          setNav(fund.nav.toString());
-                                          setUnits(fund.units.toString());
-                                          setMutualFundPurchaseDate(fund.purchaseDate || new Date().toISOString().split('T')[0]);
-                                          setMutualFundCurrentWorth(fund.currentWorth.toString()); // Load current worth
-                                          setIsAddAssetModalOpen(true);
-                                        }}
-                                        className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                        title="Edit mutual fund"
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
+                                
+                                const filtered = getFilteredMutualFunds(selectedMarket);
+                                const orderKey = getOrderKey("mutual_funds", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(f => f.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("mutual_funds", selectedMarket, newOrder);
+                                  
+                                  // Update mutual funds state to match the new order
+                                  setMutualFunds((prev) => {
+                                    const marketFunds = [...prev[selectedMarket]];
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketFunds.find(f => f.id === id))
+                                      .filter((f): f is typeof marketFunds[0] => f !== undefined);
+                                    const unordered = marketFunds.filter(f => !orderedIds.has(f.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredMutualFunds(selectedMarket).map(f => f.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredMutualFunds(selectedMarket).map((fund, index) => {
+                                    const filteredFunds = getFilteredMutualFunds(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredFunds.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={fund.id}
+                                        id={fund.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
                                       >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                          />
-                                        </svg>
-                                      </button>
-                                      <button
-                                        onClick={async () => {
-                                          if (window.confirm(`Are you sure you want to delete ${fund.fundName}? This action cannot be undone.`)) {
-                                            const dbId = fund.dbId || fund.id;
-                                            const deleted = await deleteAssetFromDatabase(dbId);
-                                            
-                                            if (deleted) {
-                                              // Remove from state
-                                              setMutualFunds((prev) => {
-                                                const updatedFunds = prev[selectedMarket].filter(f => f.id !== fund.id);
-                                                
-                                                // Recalculate net worth
-                                                const updatedStocks = stocks[selectedMarket];
-                                                const updatedBankAccounts = bankAccounts[selectedMarket];
-                                                const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                const mutualFundsTotal = updatedFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                const updatedFixedDeposits = fixedDeposits[selectedMarket];
-                                                const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                const updatedCommodities = commodities[selectedMarket];
-                                                const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                
-                                                setNetWorth((prev) => ({
-                                                  ...prev,
-                                                  [selectedMarket]: newNetWorth,
-                                                }));
-                                                
-                                                return {
-                                                  ...prev,
-                                                  [selectedMarket]: updatedFunds,
-                                                };
-                                              });
-                                            } else {
-                                              alert("Failed to delete mutual fund. Please try again.");
-                                            }
-                                          }
-                                        }}
-                                        className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                        title="Delete mutual fund"
-                                      >
-                                        <svg
-                                          className="h-4 w-4"
-                                          fill="none"
-                                          viewBox="0 0 24 24"
-                                          stroke="currentColor"
-                                        >
-                                          <path
-                                            strokeLinecap="round"
-                                            strokeLinejoin="round"
-                                            strokeWidth={2}
-                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                          />
-                                        </svg>
-                                      </button>
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                    <div>
-                                      <p className="text-xs text-gray-500 mb-1">Total Amount Invested</p>
-                                      <p className="text-sm font-semibold text-gray-900">
-                                        {currentMarket.symbol}
-                                        {fund.totalInvested.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}
-                                      </p>
-                                    </div>
-                                    <div className="text-right">
-                                      <p className="text-xs text-gray-500 mb-1">Current Worth</p>
-                                      <p className="text-sm font-semibold text-gray-900">
-                                        {currentMarket.symbol}
-                                        {fund.currentWorth.toLocaleString("en-IN", {
-                                          minimumFractionDigits: 2,
-                                          maximumFractionDigits: 2,
-                                        })}
-                                      </p>
-                                    </div>
-                                  </div>
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
+                                          <div className="flex items-start justify-between mb-3">
+                                            <div className="flex-1">
+                                              <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                                                {fund.fundName}
+                                              </h4>
+                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                <span>
+                                                  NAV: {currentMarket.symbol}
+                                                  {fund.nav.toLocaleString("en-IN", {
+                                                    minimumFractionDigits: 2,
+                                                    maximumFractionDigits: 2,
+                                                  })}
+                                                </span>
+                                                <span>Units: {fund.units.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}</span>
+                                                {fund.purchaseDate && (
+                                                  <span>
+                                                    Purchase Date: {formatDateDDMMYYYY(fund.purchaseDate)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center space-x-1">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredFunds,
+                                                    fund.id,
+                                                    "mutual_funds",
+                                                    selectedMarket,
+                                                    setMutualFunds
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredFunds,
+                                                    fund.id,
+                                                    "mutual_funds",
+                                                    selectedMarket,
+                                                    setMutualFunds
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingMutualFundId(fund.id);
+                                                  setSelectedAssetType("mutual_fund");
+                                                  setFundName(fund.fundName);
+                                                  setNav(fund.nav.toString());
+                                                  setUnits(fund.units.toString());
+                                                  setMutualFundPurchaseDate(fund.purchaseDate || new Date().toISOString().split('T')[0]);
+                                                  setMutualFundCurrentWorth(fund.currentWorth.toString()); // Load current worth
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit mutual fund"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${fund.fundName}? This action cannot be undone.`)) {
+                                                    const dbId = fund.dbId || fund.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setMutualFunds((prev) => {
+                                                        const updatedFunds = prev[selectedMarket].filter(f => f.id !== fund.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedStocks = stocks[selectedMarket];
+                                                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const updatedCommodities = commodities[selectedMarket];
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedFunds,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete mutual fund. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete mutual fund"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Total Amount Invested</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {fund.totalInvested.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                            <div className="text-right">
+                                              <p className="text-xs text-gray-500 mb-1">Current Worth</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {fund.currentWorth.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </SortableItem>
+                                    );
+                                  })}
                                 </div>
-                              ))}
-                            </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
@@ -1993,160 +2528,247 @@ export default function AssetsPage() {
                                 + Add Fixed Deposit
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredFixedDeposits(selectedMarket).map((fd) => {
-                                const maturityDate = new Date(fd.maturityDate);
-                                const isMatured = maturityDate < new Date();
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
                                 
-                                return (
-                                  <div
-                                    key={fd.id}
-                                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
-                                  >
-                                    <div className="flex items-start justify-between mb-3">
-                                      <div className="flex-1">
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <h4 className="text-sm font-semibold text-gray-900">
-                                            {fd.bankName}
-                                          </h4>
-                                          {selectedFamilyMemberFilter === "all" && (
-                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                              {getFamilyMemberName(fd.familyMemberId)}
-                                            </span>
-                                          )}
+                                const filtered = getFilteredFixedDeposits(selectedMarket);
+                                const orderKey = getOrderKey("fixed_deposits", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(fd => fd.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("fixed_deposits", selectedMarket, newOrder);
+                                  
+                                  // Update fixed deposits state to match the new order
+                                  setFixedDeposits((prev) => {
+                                    const marketFDs = [...prev[selectedMarket]];
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketFDs.find(fd => fd.id === id))
+                                      .filter((fd): fd is typeof marketFDs[0] => fd !== undefined);
+                                    const unordered = marketFDs.filter(fd => !orderedIds.has(fd.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredFixedDeposits(selectedMarket).map(fd => fd.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredFixedDeposits(selectedMarket).map((fd, index) => {
+                                    const maturityDate = new Date(fd.maturityDate);
+                                    const isMatured = maturityDate < new Date();
+                                    const filteredFDs = getFilteredFixedDeposits(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredFDs.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={fd.id}
+                                        id={fd.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
+                                      >
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
+                                          <div className="flex items-start justify-between mb-3">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-2">
+                                                <h4 className="text-sm font-semibold text-gray-900">
+                                                  {fd.bankName}
+                                                </h4>
+                                                {selectedFamilyMemberFilter === "all" && (
+                                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                    {getFamilyMemberName(fd.familyMemberId)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                <span>
+                                                  Amount: {currentMarket.symbol}
+                                                  {fd.amountInvested.toLocaleString("en-IN", {
+                                                    minimumFractionDigits: 2,
+                                                    maximumFractionDigits: 2,
+                                                  })}
+                                                </span>
+                                                <span>Rate: {fd.rateOfInterest}% p.a.</span>
+                                                <span>Duration: {fd.duration} months</span>
+                                              </div>
+                                              <div className="mt-2 text-xs text-gray-500">
+                                                <span>Start: {new Date(fd.startDate).toLocaleDateString()}</span>
+                                                <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                                {isMatured && (
+                                                  <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center space-x-1">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredFDs,
+                                                    fd.id,
+                                                    "fixed_deposits",
+                                                    selectedMarket,
+                                                    setFixedDeposits
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredFDs,
+                                                    fd.id,
+                                                    "fixed_deposits",
+                                                    selectedMarket,
+                                                    setFixedDeposits
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingFixedDepositId(fd.id);
+                                                  setSelectedAssetType("fixed_deposit");
+                                                  setFdBankName(fd.bankName);
+                                                  setFdAmount(fd.amountInvested.toString());
+                                                  setFdRate(fd.rateOfInterest.toString());
+                                                  setFdDuration(fd.duration.toString());
+                                                  setFdStartDate(fd.startDate || new Date().toISOString().split('T')[0]);
+                                                  setSelectedFamilyMemberId(fd.familyMemberId);
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit fixed deposit"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${fd.bankName} fixed deposit? This action cannot be undone.`)) {
+                                                    const dbId = fd.dbId || fd.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setFixedDeposits((prev) => {
+                                                        const updatedFDs = prev[selectedMarket].filter(f => f.id !== fd.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedStocks = stocks[selectedMarket];
+                                                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const updatedCommodities = commodities[selectedMarket];
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedFDs,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete fixed deposit. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete fixed deposit"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Amount Invested</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {fd.amountInvested.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                            <div className="text-right">
+                                              <p className="text-xs text-gray-500 mb-1">Amount at Maturity</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {fd.maturityAmount.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                          </div>
                                         </div>
-                                        <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                          <span>
-                                            Amount: {currentMarket.symbol}
-                                            {fd.amountInvested.toLocaleString("en-IN", {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 2,
-                                            })}
-                                          </span>
-                                          <span>Rate: {fd.rateOfInterest}% p.a.</span>
-                                          <span>Duration: {fd.duration} months</span>
-                                        </div>
-                                        <div className="mt-2 text-xs text-gray-500">
-                                          <span>Start: {new Date(fd.startDate).toLocaleDateString()}</span>
-                                          <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
-                                          {isMatured && (
-                                            <span className="ml-2 text-green-600 font-medium">(Matured)</span>
-                                          )}
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center space-x-1">
-                                        <button
-                                          onClick={() => {
-                                            setEditingFixedDepositId(fd.id);
-                                            setSelectedAssetType("fixed_deposit");
-                                            setFdBankName(fd.bankName);
-                                            setFdAmount(fd.amountInvested.toString());
-                                            setFdRate(fd.rateOfInterest.toString());
-                                            setFdDuration(fd.duration.toString());
-                                            setFdStartDate(fd.startDate || new Date().toISOString().split('T')[0]);
-                                            setSelectedFamilyMemberId(fd.familyMemberId);
-                                            setIsAddAssetModalOpen(true);
-                                          }}
-                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                          title="Edit fixed deposit"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                            />
-                                          </svg>
-                                        </button>
-                                        <button
-                                          onClick={async () => {
-                                            if (window.confirm(`Are you sure you want to delete ${fd.bankName} fixed deposit? This action cannot be undone.`)) {
-                                              const dbId = fd.dbId || fd.id;
-                                              const deleted = await deleteAssetFromDatabase(dbId);
-                                              
-                                              if (deleted) {
-                                                // Remove from state
-                                                setFixedDeposits((prev) => {
-                                                  const updatedFDs = prev[selectedMarket].filter(f => f.id !== fd.id);
-                                                  
-                                                  // Recalculate net worth
-                                                  const updatedStocks = stocks[selectedMarket];
-                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
-                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
-                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                  const fixedDepositsTotal = updatedFDs.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                  const updatedCommodities = commodities[selectedMarket];
-                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                  
-                                                  setNetWorth((prev) => ({
-                                                    ...prev,
-                                                    [selectedMarket]: newNetWorth,
-                                                  }));
-                                                  
-                                                  return {
-                                                    ...prev,
-                                                    [selectedMarket]: updatedFDs,
-                                                  };
-                                                });
-                                              } else {
-                                                alert("Failed to delete fixed deposit. Please try again.");
-                                              }
-                                            }
-                                          }}
-                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                          title="Delete fixed deposit"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                            />
-                                          </svg>
-                                        </button>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                      <div>
-                                        <p className="text-xs text-gray-500 mb-1">Amount Invested</p>
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {currentMarket.symbol}
-                                          {fd.amountInvested.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </p>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="text-xs text-gray-500 mb-1">Amount at Maturity</p>
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {currentMarket.symbol}
-                                          {fd.maturityAmount.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
+                                      </SortableItem>
+                                    );
+                                  })}
+                                </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
@@ -2191,164 +2813,251 @@ export default function AssetsPage() {
                                 + Add Insurance Policy
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredInsurancePolicies(selectedMarket).map((policy) => {
-                                const maturityDate = policy.dateOfMaturity ? new Date(policy.dateOfMaturity) : null;
-                                const isMatured = maturityDate && maturityDate < new Date();
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
                                 
-                                return (
-                                  <div
-                                    key={policy.id}
-                                    className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors"
-                                  >
-                                    <div className="flex items-start justify-between mb-3">
-                                      <div className="flex-1">
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <h4 className="text-sm font-semibold text-gray-900">
-                                            {policy.insuranceName}
-                                          </h4>
-                                          {selectedFamilyMemberFilter === "all" && (
-                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                              {getFamilyMemberName(policy.familyMemberId)}
-                                            </span>
-                                          )}
+                                const filtered = getFilteredInsurancePolicies(selectedMarket);
+                                const orderKey = getOrderKey("insurance_policies", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(p => p.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("insurance_policies", selectedMarket, newOrder);
+                                  
+                                  // Update insurance policies state to match the new order
+                                  setInsurancePolicies((prev) => {
+                                    const marketPolicies = [...prev[selectedMarket]];
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketPolicies.find(p => p.id === id))
+                                      .filter((p): p is typeof marketPolicies[0] => p !== undefined);
+                                    const unordered = marketPolicies.filter(p => !orderedIds.has(p.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredInsurancePolicies(selectedMarket).map(p => p.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredInsurancePolicies(selectedMarket).map((policy, index) => {
+                                    const maturityDate = policy.dateOfMaturity ? new Date(policy.dateOfMaturity) : null;
+                                    const isMatured = maturityDate && maturityDate < new Date();
+                                    const filteredPolicies = getFilteredInsurancePolicies(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredPolicies.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={policy.id}
+                                        id={policy.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
+                                      >
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
+                                          <div className="flex items-start justify-between mb-3">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-2">
+                                                <h4 className="text-sm font-semibold text-gray-900">
+                                                  {policy.insuranceName}
+                                                </h4>
+                                                {selectedFamilyMemberFilter === "all" && (
+                                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                    {getFamilyMemberName(policy.familyMemberId)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                <span>Policy #: {policy.policyNumber}</span>
+                                                {policy.nominee && <span>Nominee: {policy.nominee}</span>}
+                                              </div>
+                                              <div className="mt-2 text-xs text-gray-500">
+                                                <span>Issue Date: {new Date(policy.issueDate).toLocaleDateString()}</span>
+                                                {maturityDate && (
+                                                  <>
+                                                    <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                                    {isMatured && (
+                                                      <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                                    )}
+                                                  </>
+                                                )}
+                                                {policy.premiumPaymentDate && (
+                                                  <span className="ml-4">Next Premium: {new Date(policy.premiumPaymentDate).toLocaleDateString()}</span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center space-x-1">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredPolicies,
+                                                    policy.id,
+                                                    "insurance_policies",
+                                                    selectedMarket,
+                                                    setInsurancePolicies
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredPolicies,
+                                                    policy.id,
+                                                    "insurance_policies",
+                                                    selectedMarket,
+                                                    setInsurancePolicies
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingInsurancePolicyId(policy.id);
+                                                  setSelectedAssetType("insurance_policy");
+                                                  setInsuranceName(policy.insuranceName);
+                                                  setPolicyNumber(policy.policyNumber);
+                                                  setAmountInsured(policy.amountInsured.toString());
+                                                  setIssueDate(policy.issueDate);
+                                                  setDateOfMaturity(policy.dateOfMaturity);
+                                                  setPremium(policy.premium.toString());
+                                                  setNominee(policy.nominee || "");
+                                                  setPremiumPaymentDate(policy.premiumPaymentDate || "");
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit insurance policy"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${policy.insuranceName} insurance policy? This action cannot be undone.`)) {
+                                                    const dbId = policy.dbId || policy.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setInsurancePolicies((prev) => {
+                                                        const updatedPolicies = prev[selectedMarket].filter(p => p.id !== policy.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedStocks = stocks[selectedMarket];
+                                                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const updatedCommodities = commodities[selectedMarket];
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        // Insurance policies are NOT included in net worth calculation
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedPolicies,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete insurance policy. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete insurance policy"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Amount Insured</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {policy.amountInsured.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                            <div className="text-right">
+                                              <p className="text-xs text-gray-500 mb-1">Premium</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {policy.premium.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                          </div>
                                         </div>
-                                        <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                          <span>Policy #: {policy.policyNumber}</span>
-                                          {policy.nominee && <span>Nominee: {policy.nominee}</span>}
-                                        </div>
-                                        <div className="mt-2 text-xs text-gray-500">
-                                          <span>Issue Date: {new Date(policy.issueDate).toLocaleDateString()}</span>
-                                          {maturityDate && (
-                                            <>
-                                              <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
-                                              {isMatured && (
-                                                <span className="ml-2 text-green-600 font-medium">(Matured)</span>
-                                              )}
-                                            </>
-                                          )}
-                                          {policy.premiumPaymentDate && (
-                                            <span className="ml-4">Next Premium: {new Date(policy.premiumPaymentDate).toLocaleDateString()}</span>
-                                          )}
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center space-x-1">
-                                        <button
-                                          onClick={() => {
-                                            setEditingInsurancePolicyId(policy.id);
-                                            setSelectedAssetType("insurance_policy");
-                                            setInsuranceName(policy.insuranceName);
-                                            setPolicyNumber(policy.policyNumber);
-                                            setAmountInsured(policy.amountInsured.toString());
-                                            setIssueDate(policy.issueDate);
-                                            setDateOfMaturity(policy.dateOfMaturity);
-                                            setPremium(policy.premium.toString());
-                                            setNominee(policy.nominee || "");
-                                            setPremiumPaymentDate(policy.premiumPaymentDate || "");
-                                            setIsAddAssetModalOpen(true);
-                                          }}
-                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                          title="Edit insurance policy"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                            />
-                                          </svg>
-                                        </button>
-                                        <button
-                                          onClick={async () => {
-                                            if (window.confirm(`Are you sure you want to delete ${policy.insuranceName} insurance policy? This action cannot be undone.`)) {
-                                              const dbId = policy.dbId || policy.id;
-                                              const deleted = await deleteAssetFromDatabase(dbId);
-                                              
-                                              if (deleted) {
-                                                // Remove from state
-                                                setInsurancePolicies((prev) => {
-                                                  const updatedPolicies = prev[selectedMarket].filter(p => p.id !== policy.id);
-                                                  
-                                                  // Recalculate net worth
-                                                  const updatedStocks = stocks[selectedMarket];
-                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
-                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
-                                                  const updatedFixedDeposits = fixedDeposits[selectedMarket];
-                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                  const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                  const updatedCommodities = commodities[selectedMarket];
-                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                  // Insurance policies are NOT included in net worth calculation
-                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                  
-                                                  setNetWorth((prev) => ({
-                                                    ...prev,
-                                                    [selectedMarket]: newNetWorth,
-                                                  }));
-                                                  
-                                                  return {
-                                                    ...prev,
-                                                    [selectedMarket]: updatedPolicies,
-                                                  };
-                                                });
-                                              } else {
-                                                alert("Failed to delete insurance policy. Please try again.");
-                                              }
-                                            }
-                                          }}
-                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                          title="Delete insurance policy"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                            />
-                                          </svg>
-                                        </button>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                      <div>
-                                        <p className="text-xs text-gray-500 mb-1">Amount Insured</p>
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {currentMarket.symbol}
-                                          {policy.amountInsured.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </p>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="text-xs text-gray-500 mb-1">Premium</p>
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {currentMarket.symbol}
-                                          {policy.premium.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
+                                      </SortableItem>
+                                    );
+                                  })}
+                                </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
@@ -2393,151 +3102,239 @@ export default function AssetsPage() {
                                 + Add Commodity
                               </button>
                             </div>
-                            <div className="space-y-2">
-                              {getFilteredCommodities(selectedMarket).map((commodity) => {
-                                return (
-                                  <div
-                                    key={commodity.id}
-                                    className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
-                                  >
-                                    <div className="flex items-start justify-between">
-                                      <div className="flex-1">
-                                        <div className="flex items-center gap-2 mb-1">
-                                          <h4 className="text-base font-semibold text-gray-900">
-                                            {commodity.commodityName}
-                                          </h4>
-                                          {selectedFamilyMemberFilter === "all" && (
-                                            <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                              {getFamilyMemberName(commodity.familyMemberId)}
-                                            </span>
-                                          )}
+                            <DndContext
+                              sensors={sensors}
+                              collisionDetection={closestCenter}
+                              onDragEnd={(e) => {
+                                if (!e.over) return;
+                                
+                                const filtered = getFilteredCommodities(selectedMarket);
+                                const orderKey = getOrderKey("commodities", selectedMarket);
+                                const currentOrder = assetOrder[orderKey] || filtered.map(c => c.id);
+                                
+                                const oldIndex = currentOrder.indexOf(e.active.id as string);
+                                const newIndex = currentOrder.indexOf(e.over.id as string);
+                                
+                                if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
+                                  const newOrder = arrayMove(currentOrder, oldIndex, newIndex);
+                                  saveOrder("commodities", selectedMarket, newOrder);
+                                  
+                                  // Update commodities state to match the new order
+                                  setCommodities((prev) => {
+                                    const marketCommodities = [...prev[selectedMarket]];
+                                    const orderedIds = new Set(newOrder);
+                                    const reordered = newOrder
+                                      .map(id => marketCommodities.find(c => c.id === id))
+                                      .filter((c): c is typeof marketCommodities[0] => c !== undefined);
+                                    const unordered = marketCommodities.filter(c => !orderedIds.has(c.id));
+                                    
+                                    return {
+                                      ...prev,
+                                      [selectedMarket]: [...reordered, ...unordered],
+                                    };
+                                  });
+                                }
+                              }}
+                            >
+                              <SortableContext
+                                items={getFilteredCommodities(selectedMarket).map(c => c.id)}
+                                strategy={verticalListSortingStrategy}
+                              >
+                                <div className="space-y-2">
+                                  {getFilteredCommodities(selectedMarket).map((commodity, index) => {
+                                    const filteredCommodities = getFilteredCommodities(selectedMarket);
+                                    const isFirst = index === 0;
+                                    const isLast = index === filteredCommodities.length - 1;
+                                    
+                                    return (
+                                      <SortableItem
+                                        key={commodity.id}
+                                        id={commodity.id}
+                                        dragHandle={
+                                          <div className="px-2 text-gray-400 hover:text-gray-600">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                            </svg>
+                                          </div>
+                                        }
+                                      >
+                                        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+                                          <div className="flex items-start justify-between">
+                                            <div className="flex-1">
+                                              <div className="flex items-center gap-2 mb-1">
+                                                <h4 className="text-base font-semibold text-gray-900">
+                                                  {commodity.commodityName}
+                                                </h4>
+                                                {selectedFamilyMemberFilter === "all" && (
+                                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                    {getFamilyMemberName(commodity.familyMemberId)}
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <div className="space-y-1 text-sm text-gray-600">
+                                                <p>
+                                                  <span className="font-medium">Form:</span> {commodity.form}
+                                                </p>
+                                                <p>
+                                                  <span className="font-medium">Quantity:</span> {commodity.quantity.toLocaleString("en-IN", {
+                                                    minimumFractionDigits: 2,
+                                                    maximumFractionDigits: 4,
+                                                  })} {commodity.units}
+                                                </p>
+                                                <p>
+                                                  <span className="font-medium">Purchase Date:</span> {formatDateDDMMYYYY(commodity.purchaseDate)}
+                                                </p>
+                                                <p>
+                                                  <span className="font-medium">Purchase Price:</span> {currentMarket.symbol}
+                                                  {commodity.purchasePrice.toLocaleString("en-IN", {
+                                                    minimumFractionDigits: 2,
+                                                    maximumFractionDigits: 2,
+                                                  })}
+                                                </p>
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center gap-2 ml-4">
+                                              {/* Up/Down buttons */}
+                                              <div className="flex flex-col mr-1">
+                                                <button
+                                                  onClick={() => moveAssetUp(
+                                                    filteredCommodities,
+                                                    commodity.id,
+                                                    "commodities",
+                                                    selectedMarket,
+                                                    setCommodities
+                                                  )}
+                                                  disabled={isFirst}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                                  </svg>
+                                                </button>
+                                                <button
+                                                  onClick={() => moveAssetDown(
+                                                    filteredCommodities,
+                                                    commodity.id,
+                                                    "commodities",
+                                                    selectedMarket,
+                                                    setCommodities
+                                                  )}
+                                                  disabled={isLast}
+                                                  className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                                  </svg>
+                                                </button>
+                                              </div>
+                                              <button
+                                                onClick={() => {
+                                                  setEditingCommodityId(commodity.id);
+                                                  setSelectedAssetType("commodity");
+                                                  setCommodityName(commodity.commodityName);
+                                                  setCommodityForm(commodity.form);
+                                                  setCommodityQuantity(commodity.quantity.toString());
+                                                  setCommodityUnits(commodity.units);
+                                                  setCommodityPurchaseDate(commodity.purchaseDate);
+                                                  setCommodityPurchasePrice(commodity.purchasePrice.toString());
+                                                  setSelectedFamilyMemberId(commodity.familyMemberId);
+                                                  setIsAddAssetModalOpen(true);
+                                                }}
+                                                className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
+                                                title="Edit commodity"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                                                  />
+                                                </svg>
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  if (window.confirm(`Are you sure you want to delete ${commodity.commodityName} commodity? This action cannot be undone.`)) {
+                                                    const dbId = commodity.dbId || commodity.id;
+                                                    const deleted = await deleteAssetFromDatabase(dbId);
+                                                    
+                                                    if (deleted) {
+                                                      // Remove from state
+                                                      setCommodities((prev) => {
+                                                        const updatedCommodities = prev[selectedMarket].filter(c => c.id !== commodity.id);
+                                                        
+                                                        // Recalculate net worth
+                                                        const updatedStocks = stocks[selectedMarket];
+                                                        const updatedBankAccounts = bankAccounts[selectedMarket];
+                                                        const updatedMutualFunds = mutualFunds[selectedMarket];
+                                                        const updatedFixedDeposits = fixedDeposits[selectedMarket];
+                                                        const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
+                                                        const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
+                                                        const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
+                                                        const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
+                                                        const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
+                                                        const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
+                                                        
+                                                        setNetWorth((prev) => ({
+                                                          ...prev,
+                                                          [selectedMarket]: newNetWorth,
+                                                        }));
+                                                        
+                                                        return {
+                                                          ...prev,
+                                                          [selectedMarket]: updatedCommodities,
+                                                        };
+                                                      });
+                                                    } else {
+                                                      alert("Failed to delete commodity. Please try again.");
+                                                    }
+                                                  }
+                                                }}
+                                                className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
+                                                title="Delete commodity"
+                                              >
+                                                <svg
+                                                  className="h-4 w-4"
+                                                  fill="none"
+                                                  viewBox="0 0 24 24"
+                                                  stroke="currentColor"
+                                                >
+                                                  <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                                  />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-3 border-t border-gray-200">
+                                            <div>
+                                              <p className="text-xs text-gray-500 mb-1">Current Value</p>
+                                              <p className="text-sm font-semibold text-gray-900">
+                                                {currentMarket.symbol}
+                                                {commodity.currentValue.toLocaleString("en-IN", {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                })}
+                                              </p>
+                                            </div>
+                                          </div>
                                         </div>
-                                        <div className="space-y-1 text-sm text-gray-600">
-                                          <p>
-                                            <span className="font-medium">Form:</span> {commodity.form}
-                                          </p>
-                                          <p>
-                                            <span className="font-medium">Quantity:</span> {commodity.quantity.toLocaleString("en-IN", {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 4,
-                                            })} {commodity.units}
-                                          </p>
-                                          <p>
-                                            <span className="font-medium">Purchase Date:</span> {formatDateDDMMYYYY(commodity.purchaseDate)}
-                                          </p>
-                                          <p>
-                                            <span className="font-medium">Purchase Price:</span> {currentMarket.symbol}
-                                            {commodity.purchasePrice.toLocaleString("en-IN", {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 2,
-                                            })}
-                                          </p>
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2 ml-4">
-                                        <button
-                                          onClick={() => {
-                                            setEditingCommodityId(commodity.id);
-                                            setSelectedAssetType("commodity");
-                                            setCommodityName(commodity.commodityName);
-                                            setCommodityForm(commodity.form);
-                                            setCommodityQuantity(commodity.quantity.toString());
-                                            setCommodityUnits(commodity.units);
-                                            setCommodityPurchaseDate(commodity.purchaseDate);
-                                            setCommodityPurchasePrice(commodity.purchasePrice.toString());
-                                            setSelectedFamilyMemberId(commodity.familyMemberId);
-                                            setIsAddAssetModalOpen(true);
-                                          }}
-                                          className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
-                                          title="Edit commodity"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                            />
-                                          </svg>
-                                        </button>
-                                        <button
-                                          onClick={async () => {
-                                            if (window.confirm(`Are you sure you want to delete ${commodity.commodityName} commodity? This action cannot be undone.`)) {
-                                              const dbId = commodity.dbId || commodity.id;
-                                              const deleted = await deleteAssetFromDatabase(dbId);
-                                              
-                                              if (deleted) {
-                                                // Remove from state
-                                                setCommodities((prev) => {
-                                                  const updatedCommodities = prev[selectedMarket].filter(c => c.id !== commodity.id);
-                                                  
-                                                  // Recalculate net worth
-                                                  const updatedStocks = stocks[selectedMarket];
-                                                  const updatedBankAccounts = bankAccounts[selectedMarket];
-                                                  const updatedMutualFunds = mutualFunds[selectedMarket];
-                                                  const updatedFixedDeposits = fixedDeposits[selectedMarket];
-                                                  const stocksTotal = updatedStocks.reduce((sum, s) => sum + s.actualWorth, 0);
-                                                  const bankAccountsTotal = updatedBankAccounts.reduce((sum, a) => sum + a.balance, 0);
-                                                  const mutualFundsTotal = updatedMutualFunds.reduce((sum, f) => sum + f.currentWorth, 0);
-                                                  const fixedDepositsTotal = updatedFixedDeposits.reduce((sum, fd) => sum + fd.amountInvested, 0);
-                                                  const commoditiesTotal = updatedCommodities.reduce((sum, c) => sum + c.currentValue, 0);
-                                                  const newNetWorth = stocksTotal + bankAccountsTotal + mutualFundsTotal + fixedDepositsTotal + commoditiesTotal;
-                                                  
-                                                  setNetWorth((prev) => ({
-                                                    ...prev,
-                                                    [selectedMarket]: newNetWorth,
-                                                  }));
-                                                  
-                                                  return {
-                                                    ...prev,
-                                                    [selectedMarket]: updatedCommodities,
-                                                  };
-                                                });
-                                              } else {
-                                                alert("Failed to delete commodity. Please try again.");
-                                              }
-                                            }
-                                          }}
-                                          className="p-1.5 text-gray-400 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500 rounded transition-colors"
-                                          title="Delete commodity"
-                                        >
-                                          <svg
-                                            className="h-4 w-4"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                            stroke="currentColor"
-                                          >
-                                            <path
-                                              strokeLinecap="round"
-                                              strokeLinejoin="round"
-                                              strokeWidth={2}
-                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                                            />
-                                          </svg>
-                                        </button>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between pt-3 border-t border-gray-200">
-                                      <div>
-                                        <p className="text-xs text-gray-500 mb-1">Current Value</p>
-                                        <p className="text-sm font-semibold text-gray-900">
-                                          {currentMarket.symbol}
-                                          {commodity.currentValue.toLocaleString("en-IN", {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          })}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
+                                      </SortableItem>
+                                    );
+                                  })}
+                                </div>
+                              </SortableContext>
+                            </DndContext>
                           </div>
                         )}
                       </div>
