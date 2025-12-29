@@ -522,6 +522,17 @@ SPECIAL HANDLING FOR CSV FILE UPLOADS:
 - If multiple assets are present in the CSV, return them ALL in the "assets" array
 - If a row is missing critical required information (stock_symbol, quantity, purchase_price), skip that row but process all other rows
 
+SPECIAL HANDLING FOR PDF FILE UPLOADS:
+- If the user has uploaded a PDF file, the user message will contain ALL extracted text from the PDF
+- The PDF content may contain MULTIPLE assets (e.g., multiple bank accounts, multiple stocks, multiple mutual funds, etc.)
+- You MUST identify and extract EVERY asset mentioned in the PDF content
+- Each bank account, stock, mutual fund, fixed deposit, insurance policy, or commodity mentioned is a SEPARATE asset
+- CRITICAL: For PDF files with multiple assets, you MUST return an array of assets in the "assets" field
+- Extract asset information for EACH asset individually from the PDF content
+- If multiple assets are present in the PDF (e.g., multiple bank accounts with different account numbers, multiple stocks, etc.), return them ALL in the "assets" array
+- If an asset is missing critical required information, skip that specific asset but process all other assets
+- Look for patterns like: multiple account numbers, multiple bank names, multiple stock symbols, multiple mutual fund names, etc. - each is a separate asset
+
 REQUIRED VS OPTIONAL FIELDS BY ASSET TYPE:
 - Stock:
   * REQUIRED: stock_symbol, quantity, purchase_price, market
@@ -544,6 +555,11 @@ IMPORTANT FOR BANK ACCOUNTS:
 - Extract bank name from phrases like "HDFC bank", "SBI account", "ICICI savings", etc.
 - Extract account number if mentioned (e.g., "account number 1234567890", "acc no 1234")
 - Extract account type from phrases like "savings account", "checking account", "current account", or infer from context
+- CRITICAL: For account_type, extract ONLY the base type: "savings", "checking", or "current"
+- If you see variations like "SAVINGS - NRO", "SAVINGS - NRE", "NRO SB - EBROKING", "SAVINGS ACCOUNTS", etc., extract ONLY "savings"
+- If you see "CHECKING" or "CHECKING ACCOUNT", extract "checking"
+- If you see "CURRENT" or "CURRENT ACCOUNT", extract "current"
+- Do NOT include suffixes like "- NRO", "- NRE", "- EBROKING" in the account_type field
 - Extract current balance from phrases like "balance of 50000", "has 10000 rupees", "with 5000 euros", etc.
 - If balance is mentioned in rupees/INR, market is "india". If mentioned in euros/EUR, market is "europe".
 
@@ -578,7 +594,34 @@ Remember: Extract information from ALL messages in the conversation history abov
 CRITICAL: You MUST respond with ONLY a valid JSON object. No markdown, no code blocks, no explanations - just the raw JSON.
 
 If all information is present, return:
-- For a single asset OR CSV files with multiple assets:
+- For PDF files with MULTIPLE assets (multiple bank accounts, multiple stocks, etc.):
+{{
+  "action": "add",
+  "assets": [
+    {{
+      "asset_type": "bank_account",
+      "asset_name": "HDFC Bank",
+      "bank_name": "HDFC Bank",
+      "account_number": "1234567890",
+      "account_type": "savings",
+      "current_value": 82069.18,
+      "market": "india",
+      "family_member_name": "self"
+    }},
+    {{
+      "asset_type": "bank_account",
+      "asset_name": "HDFC Bank",
+      "bank_name": "HDFC Bank",
+      "account_number": "9876543210",
+      "account_type": "savings",
+      "current_value": 50000.00,
+      "market": "india",
+      "family_member_name": "self"
+    }}
+  ]
+}}
+
+- For CSV files with multiple rows:
 {{
   "action": "add",
   "assets": [
@@ -605,9 +648,25 @@ If all information is present, return:
   ]
 }}
 
-- For CSV files: The "assets" array MUST contain one asset object for EACH row in the CSV file that has the required fields (stock_symbol, quantity, purchase_price, market)
+- For a SINGLE asset (not from file upload):
+{{
+  "action": "add",
+  "asset_type": "stock",
+  "asset_name": "...",
+  "stock_symbol": "...",
+  "quantity": 100,
+  "purchase_price": 1550,
+  "purchase_date": "2025-11-24",
+  "market": "india",
+  "family_member_name": "self"
+}}
+
+CRITICAL RULES:
+- If the user message contains "uploaded a PDF file" or "COMPLETE PDF CONTENT", you MUST check for MULTIPLE assets (multiple bank accounts, multiple account numbers, etc.)
+- If you find MULTIPLE assets in a PDF, you MUST return them in an "assets" array - DO NOT return just one asset
+- For CSV files: The "assets" array MUST contain one asset object for EACH row in the CSV file that has the required fields
 - If the user message contains CSV data with multiple rows, process ALL rows and return ALL assets in the "assets" array
-- Each asset in the array should have all the fields for that specific row
+- Each asset in the array should have all the fields for that specific asset
 
 If information is missing for ALL assets, return:
 {{
@@ -624,34 +683,54 @@ Respond with ONLY the JSON object."""
 
             # Use JSON mode instead of function calling for more reliable parsing
             # Configure to request JSON response
+            # Check if this is a file upload (PDF/CSV) that might have multiple assets
+            is_file_upload = (
+                "uploaded a pdf file" in user_message.lower() or
+                "uploaded a csv file" in user_message.lower() or
+                "complete pdf content" in user_message.lower() or
+                "complete csv data" in user_message.lower() or
+                "all rows" in user_message.lower()
+            )
+            
             try:
-                config = types.GenerateContentConfig(
-                    response_mime_type="application/json",  # Request JSON response
-                    response_schema=types.Schema(
-                        type=types.Type.OBJECT,
-                        properties={
-                            "action": types.Schema(type=types.Type.STRING, enum=["add", "delete", "update", "none"]),
-                            "asset_type": types.Schema(type=types.Type.STRING, enum=["stock", "mutual_fund", "bank_account", "fixed_deposit", "insurance_policy", "commodity"]),
-                            "asset_id": types.Schema(type=types.Type.STRING),
-                            "asset_name": types.Schema(type=types.Type.STRING),
-                            "currency": types.Schema(type=types.Type.STRING, enum=["USD", "INR", "EUR"]),
-                            "stock_symbol": types.Schema(type=types.Type.STRING),
-                            "quantity": types.Schema(type=types.Type.NUMBER),
-                            "purchase_price": types.Schema(type=types.Type.NUMBER),
-                            "purchase_date": types.Schema(type=types.Type.STRING),
-                            "mutual_fund_code": types.Schema(type=types.Type.STRING),
-                            "units": types.Schema(type=types.Type.NUMBER),
-                            "bank_name": types.Schema(type=types.Type.STRING),
-                            "account_type": types.Schema(type=types.Type.STRING, enum=["savings", "checking", "current"]),
-                            "current_value": types.Schema(type=types.Type.NUMBER),
-                            "notes": types.Schema(type=types.Type.STRING),
-                            "family_member_name": types.Schema(type=types.Type.STRING),
-                            "market": types.Schema(type=types.Type.STRING, enum=["india", "europe"]),
-                        }
+                if is_file_upload:
+                    # For file uploads, use flexible JSON mode without strict schema
+                    # This allows the LLM to return an "assets" array for multiple assets
+                    print("DEBUG: Detected file upload - using flexible JSON schema")
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json"  # No strict schema for file uploads
                     )
-                )
+                else:
+                    # For single asset operations, use strict schema
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json",  # Request JSON response
+                        response_schema=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "action": types.Schema(type=types.Type.STRING, enum=["add", "delete", "update", "none"]),
+                                "asset_type": types.Schema(type=types.Type.STRING, enum=["stock", "mutual_fund", "bank_account", "fixed_deposit", "insurance_policy", "commodity"]),
+                                "asset_id": types.Schema(type=types.Type.STRING),
+                                "asset_name": types.Schema(type=types.Type.STRING),
+                                "currency": types.Schema(type=types.Type.STRING, enum=["USD", "INR", "EUR"]),
+                                "stock_symbol": types.Schema(type=types.Type.STRING),
+                                "quantity": types.Schema(type=types.Type.NUMBER),
+                                "purchase_price": types.Schema(type=types.Type.NUMBER),
+                                "purchase_date": types.Schema(type=types.Type.STRING),
+                                "mutual_fund_code": types.Schema(type=types.Type.STRING),
+                                "units": types.Schema(type=types.Type.NUMBER),
+                                "bank_name": types.Schema(type=types.Type.STRING),
+                                "account_type": types.Schema(type=types.Type.STRING, enum=["savings", "checking", "current"]),
+                                "current_value": types.Schema(type=types.Type.NUMBER),
+                                "notes": types.Schema(type=types.Type.STRING),
+                                "family_member_name": types.Schema(type=types.Type.STRING),
+                                "market": types.Schema(type=types.Type.STRING, enum=["india", "europe"]),
+                                "message": types.Schema(type=types.Type.STRING),
+                            }
+                        )
+                    )
             except Exception as config_error:
                 # Fallback to simple JSON mode if schema doesn't work
+                print(f"DEBUG: Schema config error, using flexible JSON mode: {config_error}")
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json"
                 )
@@ -695,6 +774,12 @@ Respond with ONLY the JSON object."""
                     
                     # Try to parse as JSON
                     args = json.loads(cleaned_response)
+                    
+                    # Debug: Log if assets array is present
+                    if 'assets' in args and isinstance(args.get('assets'), list):
+                        print(f"DEBUG: Found assets array with {len(args['assets'])} assets")
+                    else:
+                        print(f"DEBUG: No assets array found in LLM response. Keys: {list(args.keys())}")
                 except json.JSONDecodeError as json_parse_error:
                     return {
                         "action": "none",
@@ -714,33 +799,43 @@ Respond with ONLY the JSON object."""
             
             action = args.get('action', 'none') if args else 'none'
             
-            # Post-process to extract information that LLM might have missed
-            # Only run post-processing if action is 'add' OR if user message contains asset-related keywords
-            # This prevents false positives from greetings like "hi"
-            user_lower = user_message.lower()
-            asset_keywords = ['add', 'create', 'purchase', 'buy', 'stock', 'share', 'mutual fund', 'bank account', 'account', 'asset', 'portfolio', 'invest']
-            has_asset_intent = any(keyword in user_lower for keyword in asset_keywords)
+            # Check if LLM returned an "assets" array (for multiple assets from PDF/CSV)
+            assets_array = args.get('assets', []) if args else []
             
-            # Only post-process if action is 'add' OR if user message suggests asset management intent
-            if action == 'add' or (action == 'none' and has_asset_intent and args.get('asset_type')):
-                args = self._extract_info_from_message(user_message, args, conversation_history, portfolio_data)
-                # Only change action from 'none' to 'add' if:
-                # 1. User message contains asset management intent
-                # 2. We have asset_type
-                # 3. We have at least some other required information (not just asset_type)
-                if action == 'none' and has_asset_intent and args.get('asset_type'):
-                    # Check if we have at least one other piece of information (name, quantity, price, etc.)
-                    # Include fields for both stocks and bank accounts
-                    has_additional_info = any(args.get(key) for key in ['asset_name', 'stock_symbol', 'quantity', 'purchase_price', 'purchase_date', 'market', 'bank_name', 'account_number', 'account_type', 'current_value', 'family_member_name'])
-                    if has_additional_info:
-                        action = 'add'  # Try to proceed if we have asset type AND some other info
-                        args['action'] = 'add'
-                    else:
-                        # No additional info, keep action as 'none'
-                        pass
+            # If we have an assets array, skip single asset validation and process array instead
+            if assets_array and isinstance(assets_array, list) and len(assets_array) > 0:
+                # Multiple assets - validate each one individually
+                # Don't block on validation - let the upload endpoint handle invalid assets
+                action = 'add'  # Force action to 'add' if we have assets array
+            else:
+                # Single asset - use existing validation logic
+                # Post-process to extract information that LLM might have missed
+                # Only run post-processing if action is 'add' OR if user message contains asset-related keywords
+                # This prevents false positives from greetings like "hi"
+                user_lower = user_message.lower()
+                asset_keywords = ['add', 'create', 'purchase', 'buy', 'stock', 'share', 'mutual fund', 'bank account', 'account', 'asset', 'portfolio', 'invest']
+                has_asset_intent = any(keyword in user_lower for keyword in asset_keywords)
+                
+                # Only post-process if action is 'add' OR if user message suggests asset management intent
+                if action == 'add' or (action == 'none' and has_asset_intent and args.get('asset_type')):
+                    args = self._extract_info_from_message(user_message, args, conversation_history, portfolio_data)
+                    # Only change action from 'none' to 'add' if:
+                    # 1. User message contains asset management intent
+                    # 2. We have asset_type
+                    # 3. We have at least some other required information (not just asset_type)
+                    if action == 'none' and has_asset_intent and args.get('asset_type'):
+                        # Check if we have at least one other piece of information (name, quantity, price, etc.)
+                        # Include fields for both stocks and bank accounts
+                        has_additional_info = any(args.get(key) for key in ['asset_name', 'stock_symbol', 'quantity', 'purchase_price', 'purchase_date', 'market', 'bank_name', 'account_number', 'account_type', 'current_value', 'family_member_name'])
+                        if has_additional_info:
+                            action = 'add'  # Try to proceed if we have asset type AND some other info
+                            args['action'] = 'add'
+                        else:
+                            # No additional info, keep action as 'none'
+                            pass
             
             # Validate required fields if action is "add" - only block on truly critical fields
-            if action == 'add':
+            if action == 'add' and not (assets_array and isinstance(assets_array, list) and len(assets_array) > 0):
                 asset_type = args.get('asset_type')
                 missing_critical_fields = []
                 
@@ -871,13 +966,76 @@ Respond with ONLY the JSON object."""
                     "response": "I couldn't determine what action you want to perform. Please be more specific."
                 }
             
-            return {
+            # If we have an assets array, return it; otherwise return single asset_data
+            result = {
                 "action": action,
-                "asset_data": args,
                 "asset_id": args.get('asset_id'),
                 "response": response_msg,
                 "needs_confirmation": needs_confirmation
             }
+            
+            # If LLM returned multiple assets in an array, include it
+            if assets_array and isinstance(assets_array, list) and len(assets_array) > 0:
+                # Post-process each asset in the array
+                processed_assets = []
+                for asset_item in assets_array:
+                    # Post-process each asset individually
+                    processed_asset = self._extract_info_from_message(
+                        user_message, 
+                        asset_item.copy(), 
+                        conversation_history, 
+                        portfolio_data
+                    )
+                    # Set defaults for each asset
+                    if processed_asset.get('asset_type') == 'stock':
+                        if not processed_asset.get('asset_name') and processed_asset.get('stock_symbol'):
+                            processed_asset['asset_name'] = processed_asset.get('stock_symbol')
+                        if not processed_asset.get('purchase_date'):
+                            from datetime import date
+                            processed_asset['purchase_date'] = date.today().strftime('%Y-%m-%d')
+                        if not processed_asset.get('family_member_name'):
+                            processed_asset['family_member_name'] = 'self'
+                    elif processed_asset.get('asset_type') == 'bank_account':
+                        if not processed_asset.get('family_member_name'):
+                            processed_asset['family_member_name'] = 'self'
+                        if not processed_asset.get('asset_name') and processed_asset.get('bank_name'):
+                            processed_asset['asset_name'] = processed_asset.get('bank_name')
+                        
+                        # Normalize account_type - extract base type from variations
+                        account_type_raw = processed_asset.get('account_type', '').strip()
+                        if account_type_raw:
+                            account_type_lower = account_type_raw.lower()
+                            if "savings" in account_type_lower or "sb" in account_type_lower:
+                                processed_asset['account_type'] = 'savings'
+                            elif "checking" in account_type_lower:
+                                processed_asset['account_type'] = 'checking'
+                            elif "current" in account_type_lower:
+                                processed_asset['account_type'] = 'current'
+                            else:
+                                # Default to savings if unclear
+                                processed_asset['account_type'] = 'savings'
+                                print(f"WARNING: Could not normalize account_type '{account_type_raw}', defaulting to 'savings'")
+                    
+                    # Convert market to currency for each asset
+                    market = processed_asset.get('market')
+                    if market:
+                        market_lower = market.lower()
+                        if market_lower == 'india':
+                            processed_asset['currency'] = 'INR'
+                        elif market_lower == 'europe':
+                            processed_asset['currency'] = 'EUR'
+                    
+                    processed_assets.append(processed_asset)
+                
+                result["assets"] = processed_assets
+                # Also set asset_data to first asset for backward compatibility
+                if processed_assets:
+                    result["asset_data"] = processed_assets[0]
+            else:
+                # Single asset (backward compatibility)
+                result["asset_data"] = args
+            
+            return result
             
         except ImportError:
             return {

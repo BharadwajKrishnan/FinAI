@@ -15,11 +15,98 @@ interface ChatWindowProps {
   onAssetCreated?: () => void; // Callback to refresh assets when an asset is created, updated, or deleted
 }
 
+interface PasswordModalProps {
+  onConfirm: (isPasswordProtected: boolean, password?: string) => void;
+  onCancel: () => void;
+}
+
+function PasswordModal({ onConfirm, onCancel }: PasswordModalProps) {
+  const [isPasswordProtected, setIsPasswordProtected] = useState<boolean | null>(null);
+  const [password, setPassword] = useState("");
+
+  const handleYes = () => {
+    setIsPasswordProtected(true);
+  };
+
+  const handleNo = () => {
+    onConfirm(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isPasswordProtected && password.trim()) {
+      onConfirm(true, password);
+    }
+  };
+
+  if (isPasswordProtected === null) {
+    return (
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Please let us know if this PDF requires a password to open.
+        </p>
+        <div className="flex space-x-3">
+          <button
+            onClick={handleYes}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+          >
+            Yes
+          </button>
+          <button
+            onClick={handleNo}
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+          >
+            No
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label htmlFor="pdf-password" className="block text-sm font-medium text-gray-700 mb-2">
+          Enter PDF Password
+        </label>
+        <input
+          type="password"
+          id="pdf-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+          placeholder="Enter password"
+          autoFocus
+        />
+      </div>
+      <div className="flex space-x-3">
+        <button
+          type="submit"
+          disabled={!password.trim()}
+          className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export default function ChatWindow({ context = "assets", onAssetCreated }: ChatWindowProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [pdfPassword, setPdfPassword] = useState<string | null>(null);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<{ type: 'uploading' | 'success' | 'error' | null; message: string }>({ type: null, message: '' });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -148,8 +235,10 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
     setMessages((prev) => [...prev, userMessage]);
     const currentInput = input.trim();
     const currentFile = selectedFile;
+    const currentPassword = pdfPassword;
     setInput("");
     setSelectedFile(null);
+    setPdfPassword(null);
     setIsLoading(true);
     setUploadStatus({ type: 'uploading', message: currentFile ? `Uploading ${currentFile.name}...` : 'Processing...' });
 
@@ -173,6 +262,11 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
         formData.append('file', currentFile);
         formData.append('context', context);
         formData.append('conversation_history', JSON.stringify(conversationHistory));
+        
+        // Add password if it's a PDF and password is provided
+        if (currentPassword) {
+          formData.append('pdf_password', currentPassword);
+        }
         
         // If there's also text, prepend it to the conversation
         if (currentInput) {
@@ -371,14 +465,40 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
         }
         return;
       }
-      console.log("DEBUG: File validated, storing for upload on send");
-      // Just store the file, don't upload yet
-      setSelectedFile(file);
+      
+      // If it's a PDF, show password modal
+      if (fileExtension === 'pdf') {
+        setPendingFile(file);
+        setShowPasswordModal(true);
+      } else {
+        // For CSV files, just store the file
+        console.log("DEBUG: File validated, storing for upload on send");
+        setSelectedFile(file);
+        setPdfPassword(null);
+      }
+    }
+  };
+
+  const handlePasswordModalConfirm = (isPasswordProtected: boolean, password?: string) => {
+    if (pendingFile) {
+      setSelectedFile(pendingFile);
+      setPdfPassword(isPasswordProtected ? (password || null) : null);
+      setPendingFile(null);
+    }
+    setShowPasswordModal(false);
+  };
+
+  const handlePasswordModalCancel = () => {
+    setPendingFile(null);
+    setShowPasswordModal(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
   const handleRemoveFile = () => {
     setSelectedFile(null);
+    setPdfPassword(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -523,8 +643,10 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
               <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
-              <span className="text-sm font-medium text-blue-900 truncate">{selectedFile.name}</span>
-              <span className="text-xs text-blue-600">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+              <div className="flex flex-col min-w-0 flex-1">
+                <span className="text-sm font-medium text-blue-900 truncate">{selectedFile.name}</span>
+                <span className="text-xs text-blue-600">({(selectedFile.size / 1024).toFixed(1)} KB{pdfPassword ? ' • Password protected' : ''})</span>
+              </div>
             </div>
             <button
               type="button"
@@ -536,6 +658,21 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
+          </div>
+        )}
+        
+        {/* Password Modal */}
+        {showPasswordModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Is this PDF password protected?
+              </h3>
+              <PasswordModal
+                onConfirm={handlePasswordModalConfirm}
+                onCancel={handlePasswordModalCancel}
+              />
+            </div>
           </div>
         )}
         

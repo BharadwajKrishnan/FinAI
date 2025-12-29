@@ -1732,9 +1732,29 @@ async def create_asset_from_llm_data(
             if not asset_create_data.get("current_value") and asset_data.get("quantity") and asset_data.get("purchase_price"):
                 asset_create_data["current_value"] = float(asset_data.get("quantity", 0)) * float(asset_data.get("purchase_price", 0))
         elif asset_type == "bank_account":
+            # Normalize account_type - extract base type from variations like "SAVINGS - NRO", "NRO SB - EBROKING", etc.
+            account_type_raw = asset_data.get("account_type", "").strip()
+            account_type_normalized = None
+            
+            if account_type_raw:
+                account_type_lower = account_type_raw.lower()
+                # Check for savings variations
+                if "savings" in account_type_lower or "sb" in account_type_lower:
+                    account_type_normalized = "savings"
+                # Check for checking variations
+                elif "checking" in account_type_lower:
+                    account_type_normalized = "checking"
+                # Check for current variations
+                elif "current" in account_type_lower:
+                    account_type_normalized = "current"
+                # If no match found, default to savings (most common in India)
+                else:
+                    print(f"WARNING: Could not normalize account_type '{account_type_raw}', defaulting to 'savings'")
+                    account_type_normalized = "savings"
+            
             asset_create_data.update({
                 "bank_name": asset_data.get("bank_name"),
-                "account_type": asset_data.get("account_type"),
+                "account_type": account_type_normalized,
                 "account_number": asset_data.get("account_number"),
                 "interest_rate": asset_data.get("interest_rate"),
             })
@@ -1852,13 +1872,43 @@ def parse_csv_file(file_content: bytes) -> Optional[Dict[str, Any]]:
         return None
 
 
-def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
-    """Parse PDF file and extract text"""
+def parse_pdf_file(file_content: bytes, password: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse PDF file and extract text. Supports password-protected PDFs."""
     try:
         # Try pdfplumber first (better text extraction)
         try:
             import pdfplumber
-            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            pdf_stream = io.BytesIO(file_content)
+            
+            # pdfplumber doesn't directly support password, so we need to decrypt with PyPDF2 first if password is provided
+            if password:
+                # Decrypt with PyPDF2 first, then use pdfplumber
+                try:
+                    import PyPDF2
+                    pdf_reader = PyPDF2.PdfReader(pdf_stream)
+                    if pdf_reader.is_encrypted:
+                        if not pdf_reader.decrypt(password):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Incorrect password for PDF file. Please check the password and try again."
+                            )
+                        # Create a new stream with decrypted content
+                        from PyPDF2 import PdfWriter
+                        writer = PdfWriter()
+                        for page in pdf_reader.pages:
+                            writer.add_page(page)
+                        decrypted_stream = io.BytesIO()
+                        writer.write(decrypted_stream)
+                        decrypted_stream.seek(0)
+                        pdf_stream = decrypted_stream
+                except ImportError:
+                    pass
+                except Exception as e:
+                    if "Incorrect password" in str(e) or isinstance(e, HTTPException):
+                        raise
+                    print(f"Error decrypting PDF with PyPDF2: {e}")
+            
+            with pdfplumber.open(pdf_stream) as pdf:
                 text = ""
                 for page in pdf.pages:
                     page_text = page.extract_text()
@@ -1871,6 +1921,8 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
                     }
         except ImportError:
             pass
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"Error with pdfplumber: {e}")
         
@@ -1879,6 +1931,19 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
             import PyPDF2
             pdf_file = io.BytesIO(file_content)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
+            
+            # Handle password-protected PDFs
+            if pdf_reader.is_encrypted:
+                if not password:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="PDF file is password-protected. Please provide the password."
+                    )
+                if not pdf_reader.decrypt(password):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Incorrect password for PDF file. Please check the password and try again."
+                    )
             
             text = ""
             for page in pdf_reader.pages:
@@ -1895,6 +1960,8 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
                 status_code=500, 
                 detail="PDF parsing library not installed. Please install PyPDF2 or pdfplumber by running: pip install PyPDF2 pdfplumber"
             )
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"Error with PyPDF2: {e}")
         
@@ -1978,11 +2045,30 @@ def format_extracted_data(extracted_data: Dict[str, Any]) -> str:
         if not text.strip():
             return "I have uploaded a PDF file but could not extract any text from it."
         
-        # Limit text length to avoid token limits
-        if len(text) > 8000:
-            text = text[:8000] + "... (truncated)"
+        # Limit text length to avoid token limits (increased from 8000 to allow more content)
+        if len(text) > 15000:
+            text = text[:15000] + "... (truncated)"
         
-        formatted = f"I have uploaded a PDF file with the following content:\n\n{text}\n\nPlease extract asset information from this content and add it to my portfolio."
+        formatted = "I have uploaded a PDF file containing financial/asset information. The file contains ALL the data below. Please extract asset information from the ENTIRE content and add ALL assets to my portfolio.\n\n"
+        formatted += "=" * 80 + "\n"
+        formatted += "COMPLETE PDF CONTENT:\n"
+        formatted += "=" * 80 + "\n\n"
+        formatted += text
+        formatted += "\n\n"
+        formatted += "=" * 80 + "\n"
+        formatted += "\nIMPORTANT INSTRUCTIONS FOR PDF FILES:\n"
+        formatted += "1. The PDF content above may contain MULTIPLE assets (e.g., multiple bank accounts, multiple stocks, multiple mutual funds, etc.)\n"
+        formatted += "2. You MUST identify and extract EVERY asset mentioned in the PDF content\n"
+        formatted += "3. Each bank account, stock, mutual fund, fixed deposit, insurance policy, or commodity mentioned is a SEPARATE asset\n"
+        formatted += "4. CRITICAL: If multiple assets are present (e.g., multiple bank accounts), you MUST return an array of assets in the 'assets' field\n"
+        formatted += "5. Extract asset information for EACH asset individually\n"
+        formatted += "6. IMPORTANT: Add assets with whatever information is available. Use defaults for missing optional fields:\n"
+        formatted += "   - If purchase_date is missing, use today's date (YYYY-MM-DD format)\n"
+        formatted += "   - If family_member_name is missing, use 'self'\n"
+        formatted += "   - If asset_name is missing, use appropriate defaults (e.g., bank name for bank accounts)\n"
+        formatted += "7. Do not skip any assets - process ALL of them\n"
+        formatted += "8. If an asset is missing critical required information, skip that specific asset but process all other assets\n"
+        formatted += "\nPlease extract and add ALL assets from the PDF content above to my portfolio. Add them with available information and use defaults for missing optional fields."
         return formatted
     
     return "I have uploaded a file. Please extract asset information from it."
@@ -1993,6 +2079,7 @@ async def upload_file(
     file: UploadFile = File(...),
     context: str = Form("assets"),
     conversation_history: Optional[str] = Form(None),
+    pdf_password: Optional[str] = Form(None),
     current_user=Depends(get_current_user),
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
@@ -2037,7 +2124,7 @@ async def upload_file(
                 print(f"DEBUG UPLOAD: CSV parsing returned None - file might be empty or invalid")
         elif file_extension == 'pdf':
             print(f"DEBUG UPLOAD: Parsing PDF file...")
-            extracted_data = parse_pdf_file(file_content)
+            extracted_data = parse_pdf_file(file_content, password=pdf_password)
             print(f"DEBUG UPLOAD: PDF file parsed. Text length: {len(extracted_data.get('text', '')) if extracted_data else 0}")
         
         if not extracted_data:
@@ -2129,6 +2216,9 @@ async def upload_file(
         
         print(f"DEBUG: asset_result action: {asset_result.get('action')}")
         print(f"DEBUG: asset_result asset_data keys: {list(asset_result.get('asset_data', {}).keys())}")
+        print(f"DEBUG: asset_result has assets array: {'assets' in asset_result}")
+        if 'assets' in asset_result:
+            print(f"DEBUG: asset_result assets array length: {len(asset_result.get('assets', []))}")
         print(f"DEBUG: asset_result response: {asset_result.get('response', '')[:200]}")
         
         # Handle the result
@@ -2264,11 +2354,46 @@ async def upload_file(
             # Missing information - return the message asking for it
             llm_response = asset_result.get("response", "I need more information to add the assets from your file.")
         elif action == "add":
-            # Create the asset using the helper function (for PDF files or single assets)
-            llm_response = await create_asset_from_llm_data(asset_data, user_id, context)
-            if not llm_response.startswith("✅"):
-                # If creation failed, prepend file info
-                llm_response = f"I've extracted information from your {file_extension.upper()} file. {llm_response}"
+            # Check if LLM returned multiple assets in an array (for PDF files with multiple assets)
+            assets_array = asset_result.get("assets", [])
+            
+            if assets_array and isinstance(assets_array, list) and len(assets_array) > 0:
+                # Process multiple assets (for PDF files with multiple bank accounts, stocks, etc.)
+                created_count = 0
+                failed_count = 0
+                failed_assets = []
+                
+                for asset_item in assets_array:
+                    try:
+                        result_msg = await create_asset_from_llm_data(asset_item, user_id, context)
+                        if result_msg.startswith("✅"):
+                            created_count += 1
+                        else:
+                            failed_count += 1
+                            asset_name = asset_item.get("asset_name") or asset_item.get("stock_symbol") or asset_item.get("bank_name") or "asset"
+                            failed_assets.append(asset_name)
+                    except Exception as e:
+                        print(f"Error processing asset from PDF: {e}")
+                        failed_count += 1
+                        asset_name = asset_item.get("asset_name") or asset_item.get("stock_symbol") or asset_item.get("bank_name") or "asset"
+                        failed_assets.append(asset_name)
+                
+                # Build response message
+                if created_count > 0:
+                    asset_type_name = "asset" if file_extension == 'pdf' else "stock"
+                    llm_response = f"✅ Successfully added {created_count} {asset_type_name}{'s' if created_count > 1 else ''} from your {file_extension.upper()} file to your portfolio."
+                    if failed_count > 0:
+                        llm_response += f" {failed_count} asset{'s' if failed_count > 1 else ''} could not be processed."
+                else:
+                    llm_response = f"❌ Could not add any assets from your {file_extension.upper()} file. Please check the file content."
+            elif asset_data:
+                # Single asset (backward compatibility)
+                llm_response = await create_asset_from_llm_data(asset_data, user_id, context)
+                if not llm_response.startswith("✅"):
+                    # If creation failed, prepend file info
+                    llm_response = f"I've extracted information from your {file_extension.upper()} file. {llm_response}"
+            else:
+                llm_response = f"❌ Could not extract asset information from your {file_extension.upper()} file. Please ensure the file contains valid asset data."
         else:
             llm_response = asset_result.get("response", f"Processed your {file_extension.upper()} file.")
         

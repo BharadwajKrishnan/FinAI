@@ -30,13 +30,43 @@ def parse_csv_file(file_content: bytes) -> Optional[Dict[str, Any]]:
         return None
 
 
-def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
-    """Parse PDF file and extract text"""
+def parse_pdf_file(file_content: bytes, password: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse PDF file and extract text. Supports password-protected PDFs."""
     try:
         # Try pdfplumber first (better text extraction)
         try:
             import pdfplumber
-            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+            pdf_stream = io.BytesIO(file_content)
+            
+            # pdfplumber doesn't directly support password, so we need to decrypt with PyPDF2 first if password is provided
+            if password:
+                # Decrypt with PyPDF2 first, then use pdfplumber
+                try:
+                    import PyPDF2
+                    pdf_reader = PyPDF2.PdfReader(pdf_stream)
+                    if pdf_reader.is_encrypted:
+                        if not pdf_reader.decrypt(password):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Incorrect password for PDF file. Please check the password and try again."
+                            )
+                        # Create a new stream with decrypted content
+                        from PyPDF2 import PdfWriter
+                        writer = PdfWriter()
+                        for page in pdf_reader.pages:
+                            writer.add_page(page)
+                        decrypted_stream = io.BytesIO()
+                        writer.write(decrypted_stream)
+                        decrypted_stream.seek(0)
+                        pdf_stream = decrypted_stream
+                except ImportError:
+                    pass
+                except Exception as e:
+                    if "Incorrect password" in str(e) or isinstance(e, HTTPException):
+                        raise
+                    print(f"Error decrypting PDF with PyPDF2: {e}")
+            
+            with pdfplumber.open(pdf_stream) as pdf:
                 text = ""
                 for page in pdf.pages:
                     page_text = page.extract_text()
@@ -49,6 +79,8 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
                     }
         except ImportError:
             pass
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"Error with pdfplumber: {e}")
         
@@ -57,6 +89,19 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
             import PyPDF2
             pdf_file = io.BytesIO(file_content)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
+            
+            # Handle password-protected PDFs
+            if pdf_reader.is_encrypted:
+                if not password:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="PDF file is password-protected. Please provide the password."
+                    )
+                if not pdf_reader.decrypt(password):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Incorrect password for PDF file. Please check the password and try again."
+                    )
             
             text = ""
             for page in pdf_reader.pages:
@@ -69,6 +114,8 @@ def parse_pdf_file(file_content: bytes) -> Optional[Dict[str, Any]]:
                 }
         except ImportError:
             raise HTTPException(status_code=500, detail="PDF parsing library not installed. Please install PyPDF2 or pdfplumber.")
+        except HTTPException:
+            raise
         except Exception as e:
             print(f"Error with PyPDF2: {e}")
         

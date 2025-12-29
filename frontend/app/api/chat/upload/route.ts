@@ -20,6 +20,7 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File;
     const context = formData.get("context") as string || "assets";
     const conversationHistory = formData.get("conversation_history") as string;
+    const pdfPassword = formData.get("pdf_password") as string | null;
 
     if (!file) {
       return NextResponse.json(
@@ -37,6 +38,9 @@ export async function POST(request: NextRequest) {
     backendFormData.append("context", context);
     if (conversationHistory) {
       backendFormData.append("conversation_history", conversationHistory);
+    }
+    if (pdfPassword) {
+      backendFormData.append("pdf_password", pdfPassword);
     }
 
     try {
