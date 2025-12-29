@@ -240,7 +240,14 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
     setSelectedFile(null);
     setPdfPassword(null);
     setIsLoading(true);
-    setUploadStatus({ type: 'uploading', message: currentFile ? `Uploading ${currentFile.name}...` : 'Processing...' });
+    
+    // Only set upload status if there's actually a file being uploaded
+    if (currentFile) {
+      setUploadStatus({ type: 'uploading', message: `Uploading ${currentFile.name}...` });
+    } else {
+      // Clear any previous upload status for regular chat messages
+      setUploadStatus({ type: null, message: '' });
+    }
 
     // Auto-resize textarea
     if (textareaRef.current) {
