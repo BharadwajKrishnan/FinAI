@@ -2611,8 +2611,8 @@ export default function AssetsPage() {
                                                 <span>Duration: {fd.duration} months</span>
                                               </div>
                                               <div className="mt-2 text-xs text-gray-500">
-                                                <span>Start: {new Date(fd.startDate).toLocaleDateString()}</span>
-                                                <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                                <span>Start: {formatDateDDMMYYYY(fd.startDate)}</span>
+                                                <span className="ml-4">Maturity: {formatDateDDMMYYYY(fd.maturityDate)}</span>
                                                 {isMatured && (
                                                   <span className="ml-2 text-green-600 font-medium">(Matured)</span>
                                                 )}
@@ -2889,17 +2889,17 @@ export default function AssetsPage() {
                                                 {policy.nominee && <span>Nominee: {policy.nominee}</span>}
                                               </div>
                                               <div className="mt-2 text-xs text-gray-500">
-                                                <span>Issue Date: {new Date(policy.issueDate).toLocaleDateString()}</span>
+                                                <span>Issue Date: {formatDateDDMMYYYY(policy.issueDate)}</span>
                                                 {maturityDate && (
                                                   <>
-                                                    <span className="ml-4">Maturity: {maturityDate.toLocaleDateString()}</span>
+                                                    <span className="ml-4">Maturity: {formatDateDDMMYYYY(policy.dateOfMaturity || "")}</span>
                                                     {isMatured && (
                                                       <span className="ml-2 text-green-600 font-medium">(Matured)</span>
                                                     )}
                                                   </>
                                                 )}
                                                 {policy.premiumPaymentDate && (
-                                                  <span className="ml-4">Next Premium: {new Date(policy.premiumPaymentDate).toLocaleDateString()}</span>
+                                                  <span className="ml-4">Next Premium: {formatDateDDMMYYYY(policy.premiumPaymentDate)}</span>
                                                 )}
                                               </div>
                                             </div>
