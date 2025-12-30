@@ -2,12 +2,16 @@
 Assets API endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.security import HTTPAuthorizationCredentials
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from models import Asset, AssetCreate, AssetUpdate, AssetType
 from database.supabase_client import supabase, supabase_service
 from auth import get_current_user, security
+import io
+import os
+import json
+from datetime import datetime
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -534,4 +538,458 @@ async def fix_asset_currency(asset_id: str, current_user=Depends(get_current_use
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fix currency: {str(e)}")
+
+
+def parse_pdf_file(file_content: bytes, password: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Parse PDF file and extract text using PdfPlumber. Returns list of page texts."""
+    try:
+        import pdfplumber
+        
+        pdf_stream = io.BytesIO(file_content)
+        
+        # Handle password-protected PDFs by decrypting with PyPDF2 first if password is provided
+        if password:
+            try:
+                import PyPDF2
+                pdf_reader = PyPDF2.PdfReader(pdf_stream)
+                if pdf_reader.is_encrypted:
+                    if not pdf_reader.decrypt(password):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Incorrect password for PDF file. Please check the password and try again."
+                        )
+                    # Create a new stream with decrypted content
+                    from PyPDF2 import PdfWriter
+                    writer = PdfWriter()
+                    for page in pdf_reader.pages:
+                        writer.add_page(page)
+                    decrypted_stream = io.BytesIO()
+                    writer.write(decrypted_stream)
+                    decrypted_stream.seek(0)
+                    pdf_stream = decrypted_stream
+            except ImportError:
+                pass
+            except Exception as e:
+                if "Incorrect password" in str(e) or isinstance(e, HTTPException):
+                    raise
+                print(f"Error decrypting PDF with PyPDF2: {e}")
+        
+        # Parse PDF using PdfPlumber - return list of page texts
+        text_content = []
+        with pdfplumber.open(pdf_stream) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                text_content.append(text if text is not None else "")
+        
+        # Check if we extracted any text
+        if text_content and any(page_text.strip() for page_text in text_content):
+            return {
+                "type": "pdf",
+                "pages": text_content,
+                "text": "\n\n".join(text_content)  # Also provide concatenated version for backward compatibility
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not extract text from PDF file. Please ensure the PDF contains readable text."
+            )
+    except ImportError:
+        raise HTTPException(
+            status_code=500, 
+            detail="PDF parsing library not installed. Please install pdfplumber by running: pip install pdfplumber"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error parsing PDF: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error parsing PDF: {str(e)}"
+        )
+
+
+@router.post("/upload-pdf")
+async def upload_pdf_for_asset_type(
+    file: UploadFile = File(...),
+    asset_type: str = Form(...),
+    market: Optional[str] = Form(None),
+    pdf_password: Optional[str] = Form(None),
+    current_user=Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Upload a PDF file and extract assets of a specific type"""
+    try:
+        # Extract user_id safely
+        if hasattr(current_user, 'user') and hasattr(current_user.user, 'id'):
+            user_id = str(current_user.user.id)
+        elif hasattr(current_user, 'id'):
+            user_id = str(current_user.id)
+        else:
+            raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
+        
+        # Validate file type
+        file_extension = file.filename.split('.')[-1].lower() if file.filename else ''
+        if file_extension != 'pdf':
+            raise HTTPException(status_code=400, detail="Only PDF files are supported")
+        
+        # Read file content
+        file_content = await file.read()
+        if len(file_content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        
+        # Parse PDF
+        extracted_data = parse_pdf_file(file_content, password=pdf_password)
+        if not extracted_data:
+            raise HTTPException(
+                status_code=400, 
+                detail="Could not extract data from PDF file. Please ensure the PDF contains readable text and is not password-protected."
+            )
+        
+        # Get pages list from extracted data
+        pdf_pages = extracted_data.get("pages", [])
+        if not pdf_pages:
+            raise HTTPException(
+                status_code=400,
+                detail="No pages extracted from PDF file."
+            )
+        
+        # Fetch family members for owner name mapping
+        family_members_map = {}
+        try:
+            family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+            family_members_list = family_members_response.data if family_members_response.data else []
+            for fm in family_members_list:
+                family_members_map[fm.get("name", "").lower()] = str(fm.get("id"))
+        except Exception as e:
+            print(f"Error fetching family members: {e}")
+        
+        # Process each page separately
+        created_assets = []
+        errors = []
+        
+        # Only process fixed deposits for now
+        if asset_type == "fixed_deposit":
+            # Import LLM service for direct JSON calls
+            from google import genai
+            from google.genai import types
+            import asyncio
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
+            
+            client = genai.Client(api_key=api_key)
+            
+            # Process each page
+            print(f"DEBUG: Starting to process {len(pdf_pages)} pages from PDF")
+            
+            # Store context from previous pages (input and output pairs)
+            previous_contexts = []
+            
+            for page_idx, page_content in enumerate(pdf_pages):
+                print(f"DEBUG: Processing page {page_idx + 1} of {len(pdf_pages)}")
+                if not page_content or not page_content.strip():
+                    print(f"DEBUG: Page {page_idx + 1} is empty, skipping")
+                    continue
+                
+                print(f"DEBUG: Page {page_idx + 1} content length: {len(page_content)} characters")
+                try:
+                    # Build system/instruction prompt
+                    instruction_prompt = """Your task is to return the fixed deposits in a JSON format.
+
+Do not include any other text in your response. Only return the JSON.
+
+Each JSON object should have the following keys:
+
+REQUIRED FIELDS (must be present for every fixed deposit):
+1. bank_name (Account Number / Bank Account Number) - REQUIRED - This will be used as the asset name
+2. principal_amount (Amount Invested / Principal Amount) - REQUIRED
+3. fd_interest_rate (Rate of Interest / Interest Rate) - REQUIRED
+4. start_date (Start Date in YYYY-MM-DD format) - REQUIRED
+5. maturity_date (Maturity Date in YYYY-MM-DD format) - REQUIRED - Must be extracted directly from the document, do not calculate it
+
+OPTIONAL FIELDS (include if available in the document):
+6. maturity_amount (Total Amount at Maturity / Amount at Maturity / Maturity Value / Final Amount) - Optional - Extract this value ONLY if it is explicitly shown in the document with labels like "Total Amount at Maturity", "Maturity Amount", "Amount at Maturity", "Maturity Value", or "Final Amount". DO NOT calculate it. If the document does not explicitly show this value, leave it as null.
+7. duration_months (Duration in months) - Optional - Extract this from the document if available. Do not calculate it.
+8. owner_name (Owner Name - only the primary holder's name) - Optional - If not provided, use "self"
+
+CRITICAL REQUIREMENTS:
+1. You MUST provide all 5 REQUIRED fields (bank_name, principal_amount, fd_interest_rate, start_date, maturity_date) for EVERY fixed deposit. Do not skip any fixed deposit if these fields are present.
+2. If a required field is missing from the document, you can leave it as null, but try your best to extract all required fields.
+3. Make sure that you have extracted ALL fixed deposits from the page. Do not skip any fixed deposit.
+4. For maturity_amount: ONLY extract it if you see it explicitly written in the document with one of the labels mentioned above. DO NOT calculate it using principal_amount, interest rate, or duration. If it's not explicitly shown, set it to null.
+5. For optional fields, only include them if they are clearly present in the document.
+
+Return a JSON array of fixed deposit objects. If there are multiple fixed deposits on this page, return all of them in the array."""
+                    
+                    # Build conversation messages list as list of dictionaries (conversational format)
+                    contents = []
+                    
+                    # Add instruction as first user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": instruction_prompt}]
+                    })
+                    
+                    # Add previous context as conversation history (user-assistant pairs)
+                    if page_idx > 0 and previous_contexts:
+                        for prev_idx, (prev_input, prev_output) in enumerate(previous_contexts):
+                            # Add previous user message (page content)
+                            contents.append({
+                                "role": "user",
+                                "parts": [{"text": f"Here is a summary of all the fixed deposits from page {prev_idx + 1}:\n\n{prev_input}"}]
+                            })
+                            # Add previous assistant response (LLM output)
+                            contents.append({
+                                "role": "model",
+                                "parts": [{"text": prev_output}]
+                            })
+                    
+                    # Add current page as user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"Here is a summary of all the fixed deposits from page {page_idx + 1}:\n\n{page_content}"}]
+                    })
+                    
+                    # Call Gemini with JSON mode
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                    
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: client.models.generate_content(
+                            model="gemini-2.0-flash-exp",
+                            contents=contents,
+                            config=config,
+                        )
+                    )
+                    
+                    # Extract JSON response
+                    text_response = ""
+                    if hasattr(response, 'text') and response.text:
+                        text_response = response.text
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                            text_response = "".join(text_parts)
+                    
+                    if not text_response:
+                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                        continue
+                    
+                    # Parse JSON response
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = text_response.strip()
+                        if cleaned_response.startswith("```json"):
+                            cleaned_response = cleaned_response[7:]
+                        if cleaned_response.startswith("```"):
+                            cleaned_response = cleaned_response[3:]
+                        if cleaned_response.endswith("```"):
+                            cleaned_response = cleaned_response[:-3]
+                        cleaned_response = cleaned_response.strip()
+                        
+                        fixed_deposits = json.loads(cleaned_response)
+                        # Handle both single object and array
+                        if not isinstance(fixed_deposits, list):
+                            fixed_deposits = [fixed_deposits]
+                        
+                        print(f"DEBUG: Page {page_idx + 1}: LLM returned {len(fixed_deposits)} fixed deposit(s)")
+                        
+                        # Store input and output for future context (for pages after the first)
+                        # This helps the LLM understand the format and extract data consistently
+                        previous_contexts.append((page_content, cleaned_response))
+                        print(f"DEBUG: Page {page_idx + 1}: Stored context for future pages (total contexts: {len(previous_contexts)})")
+                        
+                        # Skip if empty array (no fixed deposits on this page) - this is valid, just log and continue
+                        if len(fixed_deposits) == 0:
+                            print(f"DEBUG: Page {page_idx + 1}: Empty array returned (no fixed deposits on this page), continuing to next page")
+                            continue  # This is fine - just means no FDs on this page
+                        
+                        # Process each fixed deposit
+                        for fd_idx, fd_data in enumerate(fixed_deposits):
+                            print(f"DEBUG: Page {page_idx + 1}, Fixed Deposit {fd_idx + 1}: Processing {fd_data}")
+                            try:
+                                # Get currency from market
+                                asset_market = market or "india"
+                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
+                                
+                                # Extract and validate fields
+                                bank_name = fd_data.get("bank_name") or fd_data.get("Bank Name") or "Unknown Bank"
+                                principal_amount = fd_data.get("principal_amount") or fd_data.get("Amount Invested")
+                                fd_interest_rate = fd_data.get("fd_interest_rate") or fd_data.get("Rate of Interest")
+                                duration_months = fd_data.get("duration_months") or fd_data.get("Duration")
+                                start_date_str = fd_data.get("start_date") or fd_data.get("Start Date")
+                                maturity_date_str = fd_data.get("maturity_date") or fd_data.get("Maturity Date")
+                                maturity_amount = fd_data.get("maturity_amount") or fd_data.get("Total Amount at Maturity") or fd_data.get("Maturity Amount") or fd_data.get("Amount at Maturity") or fd_data.get("Maturity Value") or fd_data.get("Final Amount")
+                                owner_name = fd_data.get("owner_name") or fd_data.get("Owner Name") or "self"
+                                
+                                print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Extracted fields - duration_months={duration_months}, maturity_date_str={maturity_date_str}, maturity_amount={maturity_amount}")
+                                
+                                # Validate required fields
+                                if not principal_amount or not fd_interest_rate or not start_date_str:
+                                    error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Missing required fields (principal_amount, fd_interest_rate, or start_date)"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Parse start date
+                                try:
+                                    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                                except:
+                                    # Try other date formats
+                                    try:
+                                        start_date = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                                    except:
+                                        try:
+                                            start_date = datetime.strptime(start_date_str, "%d/%m/%Y").date()
+                                        except:
+                                            error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Invalid start date format: {start_date_str}"
+                                            print(f"DEBUG: {error_msg}")
+                                            errors.append(error_msg)
+                                            continue
+                                
+                                # Get maturity date (must be provided by user/PDF, not calculated)
+                                maturity_date = None
+                                
+                                # Validate that maturity_date is provided (required field)
+                                if not maturity_date_str:
+                                    error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Missing maturity_date. Maturity date must be provided in the document."
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Parse maturity_date from LLM response (user-provided value)
+                                try:
+                                    maturity_date = datetime.strptime(maturity_date_str, "%Y-%m-%d").date()
+                                    print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Using maturity_date from document (YYYY-MM-DD): {maturity_date}")
+                                except:
+                                    try:
+                                        maturity_date = datetime.strptime(maturity_date_str, "%d-%m-%Y").date()
+                                        print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Using maturity_date from document (DD-MM-YYYY): {maturity_date}")
+                                    except:
+                                        try:
+                                            maturity_date = datetime.strptime(maturity_date_str, "%d/%m/%Y").date()
+                                            print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Using maturity_date from document (DD/MM/YYYY): {maturity_date}")
+                                        except:
+                                            error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Invalid maturity date format: {maturity_date_str}"
+                                            print(f"DEBUG: {error_msg}")
+                                            errors.append(error_msg)
+                                            continue
+                                
+                                # Map owner name to family member ID
+                                family_member_id = None
+                                owner_name_lower = owner_name.lower().strip()
+                                if owner_name_lower in ["self", "me", "myself", ""]:
+                                    family_member_id = None
+                                elif owner_name_lower in family_members_map:
+                                    family_member_id = family_members_map[owner_name_lower]
+                                else:
+                                    # Try partial match
+                                    for fm_name, fm_id in family_members_map.items():
+                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                            family_member_id = fm_id
+                                            break
+                                
+                                # Build asset data
+                                asset_data = {
+                                    "name": bank_name,
+                                    "type": "fixed_deposit",
+                                    "currency": currency,
+                                    "principal_amount": float(principal_amount),
+                                    "fd_interest_rate": float(fd_interest_rate),
+                                    "start_date": start_date.isoformat(),
+                                    "maturity_date": maturity_date.isoformat(),
+                                    "is_active": True,
+                                    "family_member_id": family_member_id
+                                }
+                                
+                                # Set current_value from maturity_amount if provided in the document
+                                if maturity_amount:
+                                    try:
+                                        asset_data["current_value"] = float(maturity_amount)
+                                        print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Using maturity_amount from document: {maturity_amount}")
+                                    except (ValueError, TypeError):
+                                        print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Invalid maturity_amount format: {maturity_amount}, setting current_value to 0")
+                                        asset_data["current_value"] = 0.0
+                                else:
+                                    asset_data["current_value"] = 0.0
+                                    print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: No maturity_amount in document, current_value set to 0")
+                                
+                                # Create AssetCreate object
+                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                                asset_create.model_validate_asset_fields()
+                                
+                                # Convert to dict
+                                try:
+                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                                except AttributeError:
+                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                                
+                                asset_dict["user_id"] = user_id
+                                
+                                # Convert decimals to strings
+                                decimal_fields = ['principal_amount', 'fd_interest_rate', 'current_value']
+                                for field in decimal_fields:
+                                    if field in asset_dict and asset_dict[field] is not None:
+                                        asset_dict[field] = str(asset_dict[field])
+                                
+                                # Insert into database
+                                print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Inserting into database - {bank_name}")
+                                response = supabase_service.table("assets").insert(asset_dict).execute()
+                                if response.data and len(response.data) > 0:
+                                    print(f"DEBUG: Page {page_idx + 1}, FD {fd_idx + 1}: Successfully created - {bank_name}")
+                                    created_assets.append(response.data[0])
+                                else:
+                                    error_msg = f"Page {page_idx + 1}: Failed to create fixed deposit: {bank_name}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    
+                            except Exception as e:
+                                import traceback
+                                print(f"Error processing fixed deposit from page {page_idx + 1}: {e}")
+                                print(traceback.format_exc())
+                                errors.append(f"Page {page_idx + 1}: Error processing fixed deposit: {str(e)}")
+                    
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
+                        print(f"LLM response was: {text_response}")
+                    except Exception as e:
+                        import traceback
+                        print(f"Error processing page {page_idx + 1}: {e}")
+                        print(traceback.format_exc())
+                        errors.append(f"Page {page_idx + 1}: {str(e)}")
+                
+                except Exception as e:
+                    import traceback
+                    print(f"Error calling LLM for page {page_idx + 1}: {e}")
+                    print(traceback.format_exc())
+                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+        
+        else:
+            errors.append(f"Unsupported asset type: {asset_type}")
+        
+        print(f"DEBUG: Finished processing all pages. Created {len(created_assets)} assets, {len(errors)} errors")
+        
+        if not created_assets and not errors:
+            errors.append("No fixed deposits found in the PDF")
+        
+        return {
+            "success": len(created_assets) > 0,
+            "created_count": len(created_assets),
+            "created_assets": created_assets,
+            "errors": errors,
+            "message": f"Successfully added {len(created_assets)} {asset_type}(s) from PDF" if created_assets else "No assets could be extracted from the PDF"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"Error in upload_pdf_for_asset_type: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 

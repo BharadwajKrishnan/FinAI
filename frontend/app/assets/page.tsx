@@ -247,6 +247,7 @@ export default function AssetsPage() {
   });
   
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
   
   // Stock-specific fields
   const [stockName, setStockName] = useState("");
@@ -307,22 +308,6 @@ export default function AssetsPage() {
     const price = parseFloat(stockPrice) || 0;
     const quantity = parseFloat(stockQuantity) || 0;
     return price * quantity;
-  };
-  
-  // Calculate maturity amount for fixed deposit (compound interest)
-  // Fixed deposits compound annually
-  const calculateMaturityAmount = (principal: number, rate: number, durationMonths: number): number => {
-    if (principal <= 0 || rate <= 0 || durationMonths <= 0) {
-      return 0;
-    }
-    // Convert annual rate to decimal (divide by 100)
-    const annualRate = rate / 100;
-    // Calculate number of years
-    const years = durationMonths / 12;
-    // Calculate compound interest: A = P(1 + r)^n
-    // For annual compounding: A = P(1 + annualRate)^years
-    const maturityAmount = principal * Math.pow(1 + annualRate, years);
-    return maturityAmount;
   };
   
   // Recalculate net worth from all assets for a given market
@@ -663,6 +648,47 @@ export default function AssetsPage() {
 
   // Note: Family member net worth calculation removed - now handled in Profile page
 
+  // Handle PDF upload for fixed deposits
+  const handleFixedDepositPdfUpload = async (file: File) => {
+    setIsUploadingPdf(true);
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) {
+        alert("Please log in to upload files");
+        setIsUploadingPdf(false);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("asset_type", "fixed_deposit");
+      formData.append("market", selectedMarket);
+
+      const response = await fetch("/api/assets/upload-pdf", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message || `Successfully added ${data.created_count} fixed deposit(s) from PDF`);
+        // Refresh assets to show the newly created fixed deposits
+        await fetchAssets();
+      } else {
+        alert(data.message || "Failed to process PDF. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error uploading PDF:", error);
+      alert("An error occurred while uploading the PDF. Please try again.");
+    } finally {
+      setIsUploadingPdf(false);
+    }
+  };
+
   // Function to fetch assets - made accessible for refresh callback
   const fetchAssets = async () => {
     try {
@@ -776,7 +802,8 @@ export default function AssetsPage() {
               const startDate = asset.start_date ? new Date(asset.start_date) : new Date();
               const maturityDate = asset.maturity_date ? new Date(asset.maturity_date) : new Date();
               const durationMonths = Math.round((maturityDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24 * 30));
-              const maturityAmount = calculateMaturityAmount(principalAmount, interestRate, durationMonths);
+              // Do NOT calculate maturityAmount - use current_value from database if available, otherwise 0
+              const maturityAmount = asset.current_value ? parseFloat(asset.current_value) : 0;
               
               const fixedDeposit = {
                 id: asset.id,
@@ -785,7 +812,7 @@ export default function AssetsPage() {
                 amountInvested: principalAmount,
                 rateOfInterest: interestRate,
                 duration: durationMonths,
-                maturityAmount: maturityAmount,
+                maturityAmount: maturityAmount, // Use value from database, not calculated
                 startDate: asset.start_date || new Date().toISOString().split('T')[0],
                 maturityDate: asset.maturity_date || new Date().toISOString().split('T')[0],
                 familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
@@ -1614,7 +1641,18 @@ export default function AssetsPage() {
   }
   
   return (
-    <main className="h-screen flex flex-col">
+    <main className="h-screen flex flex-col relative">
+      {/* PDF Upload Loading Overlay */}
+      {isUploadingPdf && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-8 flex flex-col items-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
+            <p className="text-gray-700 font-medium">Processing PDF...</p>
+            <p className="text-sm text-gray-500 mt-2">Extracting fixed deposit information</p>
+          </div>
+        </div>
+      )}
+      
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="flex items-center justify-between">
@@ -1817,15 +1855,53 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Start building your portfolio by adding your first stock
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("stock");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Stock
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("stock");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Stock
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-stock-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  // Placeholder for future functionality
+                                  if (e.target.files && e.target.files[0]) {
+                                    console.log("PDF selected for stocks:", e.target.files[0]);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-stock-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -1833,15 +1909,53 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {getFilteredStocks(selectedMarket).length} {getFilteredStocks(selectedMarket).length === 1 ? "Stock" : "Stocks"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("stock");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Stock
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-stock-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    // Placeholder for future functionality
+                                    if (e.target.files && e.target.files[0]) {
+                                      console.log("PDF selected for stocks:", e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-stock-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("stock");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Stock
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -2151,15 +2265,53 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Track your bank account balances and transactions
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("bank_account");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Bank Account
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("bank_account");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Bank Account
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-bank-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  // Placeholder for future functionality
+                                  if (e.target.files && e.target.files[0]) {
+                                    console.log("PDF selected for bank accounts:", e.target.files[0]);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-bank-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -2167,15 +2319,53 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {getFilteredBankAccounts(selectedMarket).length} {getFilteredBankAccounts(selectedMarket).length === 1 ? "Bank Account" : "Bank Accounts"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("bank_account");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Bank Account
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-bank-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    // Placeholder for future functionality
+                                    if (e.target.files && e.target.files[0]) {
+                                      console.log("PDF selected for bank accounts:", e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-bank-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("bank_account");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Bank Account
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -2464,15 +2654,53 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Manage your mutual fund investments and track performance
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("mutual_fund");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Mutual Fund
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("mutual_fund");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Mutual Fund
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-fund-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  // Placeholder for future functionality
+                                  if (e.target.files && e.target.files[0]) {
+                                    console.log("PDF selected for mutual funds:", e.target.files[0]);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-fund-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -2480,15 +2708,53 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {mutualFunds[selectedMarket].length} {mutualFunds[selectedMarket].length === 1 ? "Mutual Fund" : "Mutual Funds"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("mutual_fund");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Mutual Fund
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-fund-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    // Placeholder for future functionality
+                                    if (e.target.files && e.target.files[0]) {
+                                      console.log("PDF selected for mutual funds:", e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-fund-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("mutual_fund");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Mutual Fund
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -2782,15 +3048,54 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Track your fixed deposit investments and maturity dates
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("fixed_deposit");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Fixed Deposit
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("fixed_deposit");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Fixed Deposit
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-fd-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleFixedDepositPdfUpload(e.target.files[0]);
+                                    // Reset input so the same file can be selected again
+                                    e.target.value = '';
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-fd-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -2798,15 +3103,54 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {getFilteredFixedDeposits(selectedMarket).length} {getFilteredFixedDeposits(selectedMarket).length === 1 ? "Fixed Deposit" : "Fixed Deposits"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("fixed_deposit");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Fixed Deposit
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-fd-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    if (e.target.files && e.target.files[0]) {
+                                      handleFixedDepositPdfUpload(e.target.files[0]);
+                                      // Reset input so the same file can be selected again
+                                      e.target.value = '';
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-fd-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("fixed_deposit");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Fixed Deposit
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -3076,15 +3420,53 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Track your insurance policies and coverage details
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("insurance_policy");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Insurance Policy
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("insurance_policy");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Insurance Policy
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-policy-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  // Placeholder for future functionality
+                                  if (e.target.files && e.target.files[0]) {
+                                    console.log("PDF selected for insurance policies:", e.target.files[0]);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-policy-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -3092,15 +3474,53 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {getFilteredInsurancePolicies(selectedMarket).length} {getFilteredInsurancePolicies(selectedMarket).length === 1 ? "Insurance Policy" : "Insurance Policies"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("insurance_policy");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Insurance Policy
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-policy-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    // Placeholder for future functionality
+                                    if (e.target.files && e.target.files[0]) {
+                                      console.log("PDF selected for insurance policies:", e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-policy-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("insurance_policy");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Insurance Policy
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -3408,15 +3828,53 @@ export default function AssetsPage() {
                             <p className="text-gray-500 mb-4">
                               Track your commodities like gold, silver, etc.
                             </p>
-                            <button
-                              onClick={() => {
-                                setSelectedAssetType("commodity");
-                                setIsAddAssetModalOpen(true);
-                              }}
-                              className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                            >
-                              Add Commodity
-                            </button>
+                            <div className="flex items-center gap-2 justify-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedAssetType("commodity");
+                                  setIsAddAssetModalOpen(true);
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                              >
+                                Add Commodity
+                              </button>
+                              <input
+                                type="file"
+                                id="pdf-upload-commodity-empty"
+                                accept=".pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  // Placeholder for future functionality
+                                  if (e.target.files && e.target.files[0]) {
+                                    console.log("PDF selected for commodities:", e.target.files[0]);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = document.getElementById("pdf-upload-commodity-empty") as HTMLInputElement;
+                                  input?.click();
+                                }}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-2"
+                                title="Upload PDF"
+                              >
+                                <svg
+                                  className="h-4 w-4"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                >
+                                  <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth={2}
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                  />
+                                </svg>
+                                Upload PDF
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-3">
@@ -3424,15 +3882,53 @@ export default function AssetsPage() {
                               <h3 className="text-sm font-medium text-gray-700">
                                 {getFilteredCommodities(selectedMarket).length} {getFilteredCommodities(selectedMarket).length === 1 ? "Commodity" : "Commodities"}
                               </h3>
-                              <button
-                                onClick={() => {
-                                  setSelectedAssetType("commodity");
-                                  setIsAddAssetModalOpen(true);
-                                }}
-                                className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
-                              >
-                                + Add Commodity
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="file"
+                                  id="pdf-upload-commodity-header"
+                                  accept=".pdf"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    // Placeholder for future functionality
+                                    if (e.target.files && e.target.files[0]) {
+                                      console.log("PDF selected for commodities:", e.target.files[0]);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const input = document.getElementById("pdf-upload-commodity-header") as HTMLInputElement;
+                                    input?.click();
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors flex items-center gap-1.5"
+                                  title="Upload PDF"
+                                >
+                                  <svg
+                                    className="h-3.5 w-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke="currentColor"
+                                  >
+                                    <path
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      strokeWidth={2}
+                                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                                    />
+                                  </svg>
+                                  Upload PDF
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedAssetType("commodity");
+                                    setIsAddAssetModalOpen(true);
+                                  }}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+                                >
+                                  + Add Commodity
+                                </button>
+                              </div>
                             </div>
                             <DndContext
                               sensors={sensors}
@@ -4079,7 +4575,8 @@ export default function AssetsPage() {
                     const amountInvested = parseFloat(fdAmount) || 0;
                     const rateOfInterest = parseFloat(fdRate) || 0;
                     const duration = parseFloat(fdDuration) || 0;
-                    const maturityAmount = calculateMaturityAmount(amountInvested, rateOfInterest, duration);
+                    // Do NOT calculate maturityAmount - use 0 (will be set by user if needed)
+                    const maturityAmount = 0;
                     
                     // Calculate dates
                     const startDate = new Date(fdStartDate);
@@ -4870,32 +5367,7 @@ export default function AssetsPage() {
                       />
                     </div>
                     
-                    {/* Calculated Maturity Amount */}
-                    {(() => {
-                      const amount = parseFloat(fdAmount) || 0;
-                      const rate = parseFloat(fdRate) || 0;
-                      const duration = parseFloat(fdDuration) || 0;
-                      const maturityAmount = duration > 0 && amount > 0 && rate > 0 
-                        ? calculateMaturityAmount(amount, rate, duration)
-                        : 0;
-                      
-                      return maturityAmount > 0 ? (
-                        <div className="bg-gray-50 rounded-md p-4 border border-gray-200">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-700">
-                              Amount at Maturity:
-                            </span>
-                            <span className="text-lg font-semibold text-gray-900">
-                              {currentMarket.symbol}
-                              {maturityAmount.toLocaleString("en-IN", {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2,
-                              })}
-                            </span>
-                          </div>
-                        </div>
-                      ) : null;
-                    })()}
+                    {/* Maturity Amount calculation removed - do not calculate */}
                   </div>
                 )}
 
