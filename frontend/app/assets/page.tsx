@@ -130,6 +130,9 @@ export default function AssetsPage() {
   // Asset order state - stores order by asset type and market
   const [assetOrder, setAssetOrder] = useState<Record<string, string[]>>({});
   
+  // Selected assets state - stores selected asset IDs by asset type and market
+  const [selectedAssets, setSelectedAssets] = useState<Record<string, Set<string>>>({});
+  
   // Family members state (for filtering only - management moved to Profile page)
   const [familyMembers, setFamilyMembers] = useState<Array<{
     id: string;
@@ -1094,6 +1097,120 @@ export default function AssetsPage() {
     }
   };
 
+  // Helper function to get selection key for asset type and market
+  const getSelectionKey = (assetType: string, market: Market): string => {
+    return `${assetType}_${market}`;
+  };
+
+  // Check if asset is selected
+  const isAssetSelected = (assetId: string, assetType: string, market: Market): boolean => {
+    const key = getSelectionKey(assetType, market);
+    return selectedAssets[key]?.has(assetId) || false;
+  };
+
+  // Toggle asset selection
+  const toggleAssetSelection = (assetId: string, assetType: string, market: Market) => {
+    const key = getSelectionKey(assetType, market);
+    setSelectedAssets((prev) => {
+      const currentSet = prev[key] || new Set<string>();
+      const newSet = new Set(currentSet);
+      if (newSet.has(assetId)) {
+        newSet.delete(assetId);
+      } else {
+        newSet.add(assetId);
+      }
+      return {
+        ...prev,
+        [key]: newSet,
+      };
+    });
+  };
+
+  // Select all assets of a type
+  const selectAllAssets = (assetIds: string[], assetType: string, market: Market) => {
+    const key = getSelectionKey(assetType, market);
+    setSelectedAssets((prev) => ({
+      ...prev,
+      [key]: new Set(assetIds),
+    }));
+  };
+
+  // Deselect all assets of a type
+  const deselectAllAssets = (assetType: string, market: Market) => {
+    const key = getSelectionKey(assetType, market);
+    setSelectedAssets((prev) => {
+      const newPrev = { ...prev };
+      delete newPrev[key];
+      return newPrev;
+    });
+  };
+
+  // Check if all assets are selected
+  const areAllAssetsSelected = (assetIds: string[], assetType: string, market: Market): boolean => {
+    if (assetIds.length === 0) return false;
+    const key = getSelectionKey(assetType, market);
+    const selected = selectedAssets[key] || new Set<string>();
+    return assetIds.every((id) => selected.has(id));
+  };
+
+  // Bulk delete selected assets
+  const deleteSelectedAssets = async (assetType: string, market: Market) => {
+    const key = getSelectionKey(assetType, market);
+    const selected = selectedAssets[key];
+    if (!selected || selected.size === 0) {
+      alert("No assets selected for deletion.");
+      return;
+    }
+
+    const selectedIds = Array.from(selected);
+    const count = selectedIds.length;
+    
+    if (!window.confirm(`Are you sure you want to delete ${count} selected asset${count > 1 ? 's' : ''}? This action cannot be undone.`)) {
+      return;
+    }
+
+    // Get all assets to find their dbIds
+    let assetsToDelete: Array<{ id: string; dbId?: string }> = [];
+    
+    if (assetType === "stocks") {
+      assetsToDelete = stocks[market].filter((s) => selectedIds.includes(s.id));
+    } else if (assetType === "bank_accounts") {
+      assetsToDelete = bankAccounts[market].filter((a) => selectedIds.includes(a.id));
+    } else if (assetType === "mutual_funds") {
+      assetsToDelete = mutualFunds[market].filter((f) => selectedIds.includes(f.id));
+    } else if (assetType === "fixed_deposits") {
+      assetsToDelete = fixedDeposits[market].filter((fd) => selectedIds.includes(fd.id));
+    } else if (assetType === "insurance_policies") {
+      assetsToDelete = insurancePolicies[market].filter((p) => selectedIds.includes(p.id));
+    } else if (assetType === "commodities") {
+      assetsToDelete = commodities[market].filter((c) => selectedIds.includes(c.id));
+    }
+
+    // Delete all selected assets
+    const deletePromises = assetsToDelete.map((asset) => {
+      const dbId = asset.dbId || asset.id;
+      return deleteAssetFromDatabase(dbId);
+    });
+
+    const results = await Promise.all(deletePromises);
+    const successCount = results.filter((r) => r === true).length;
+    const failCount = results.length - successCount;
+
+    if (successCount > 0) {
+      // Refresh assets from database
+      await fetchAssets();
+      
+      // Clear selections
+      deselectAllAssets(assetType, market);
+      
+      if (failCount > 0) {
+        alert(`Successfully deleted ${successCount} asset${successCount > 1 ? 's' : ''}. ${failCount} asset${failCount > 1 ? 's' : ''} failed to delete.`);
+      }
+    } else {
+      alert(`Failed to delete assets. Please try again.`);
+    }
+  };
+
   // Save fixed deposit to database
   const saveFixedDepositToDatabase = async (fd: {
     id: string;
@@ -1647,6 +1764,40 @@ export default function AssetsPage() {
                   <div className="p-6">
                     {activeTab === "stocks" && (
                       <div>
+                        {getFilteredStocks(selectedMarket).length > 0 && (
+                          <div className="mb-4 flex items-center justify-between">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={areAllAssetsSelected(
+                                  getFilteredStocks(selectedMarket).map(s => s.id),
+                                  "stocks",
+                                  selectedMarket
+                                )}
+                                onChange={(e) => {
+                                  const filteredStocks = getFilteredStocks(selectedMarket);
+                                  if (e.target.checked) {
+                                    selectAllAssets(filteredStocks.map(s => s.id), "stocks", selectedMarket);
+                                  } else {
+                                    deselectAllAssets("stocks", selectedMarket);
+                                  }
+                                }}
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">Select All</span>
+                            </label>
+                            <button
+                              onClick={() => deleteSelectedAssets("stocks", selectedMarket)}
+                              disabled={
+                                !selectedAssets[getSelectionKey("stocks", selectedMarket)] ||
+                                selectedAssets[getSelectionKey("stocks", selectedMarket)]?.size === 0
+                              }
+                              className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete Selected ({selectedAssets[getSelectionKey("stocks", selectedMarket)]?.size || 0})
+                            </button>
+                          </div>
+                        )}
                         {getFilteredStocks(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
@@ -1751,31 +1902,40 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
                                           <div className="flex items-start justify-between mb-3">
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <h4 className="text-sm font-semibold text-gray-900">
-                                                  {stock.name}
-                                                </h4>
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(stock.id, "stocks", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(stock.id, "stocks", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                  <h4 className="text-sm font-semibold text-gray-900">
+                                                    {stock.name}
+                                                  </h4>
                                                 {selectedFamilyMemberFilter === "all" && (
                                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
                                                     {getFamilyMemberName(stock.familyMemberId)}
                                                   </span>
                                                 )}
-                                              </div>
-                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                                <span>
-                                                  Avg. Price: {currentMarket.symbol}
-                                                  {stock.price.toLocaleString("en-IN", {
-                                                    minimumFractionDigits: 2,
-                                                    maximumFractionDigits: 2,
-                                                  })}
-                                                </span>
-                                                <span>Qty: {stock.quantity}</span>
-                                                {stock.purchaseDate && (
+                                                </div>
+                                                <div className="flex items-center space-x-4 text-xs text-gray-600">
                                                   <span>
-                                                    Purchase Date: {formatDateDDMMYYYY(stock.purchaseDate)}
+                                                    Avg. Price: {currentMarket.symbol}
+                                                    {stock.price.toLocaleString("en-IN", {
+                                                      minimumFractionDigits: 2,
+                                                      maximumFractionDigits: 2,
+                                                    })}
                                                   </span>
-                                                )}
+                                                  <span>Qty: {stock.quantity}</span>
+                                                  {stock.purchaseDate && (
+                                                    <span>
+                                                      Purchase Date: {formatDateDDMMYYYY(stock.purchaseDate)}
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-1">
@@ -1938,6 +2098,40 @@ export default function AssetsPage() {
 
                     {activeTab === "bank_accounts" && (
                       <div>
+                        {getFilteredBankAccounts(selectedMarket).length > 0 && (
+                          <div className="mb-4 flex items-center justify-between">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={areAllAssetsSelected(
+                                  getFilteredBankAccounts(selectedMarket).map(a => a.id),
+                                  "bank_accounts",
+                                  selectedMarket
+                                )}
+                                onChange={(e) => {
+                                  const filteredAccounts = getFilteredBankAccounts(selectedMarket);
+                                  if (e.target.checked) {
+                                    selectAllAssets(filteredAccounts.map(a => a.id), "bank_accounts", selectedMarket);
+                                  } else {
+                                    deselectAllAssets("bank_accounts", selectedMarket);
+                                  }
+                                }}
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">Select All</span>
+                            </label>
+                            <button
+                              onClick={() => deleteSelectedAssets("bank_accounts", selectedMarket)}
+                              disabled={
+                                !selectedAssets[getSelectionKey("bank_accounts", selectedMarket)] ||
+                                selectedAssets[getSelectionKey("bank_accounts", selectedMarket)]?.size === 0
+                              }
+                              className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete Selected ({selectedAssets[getSelectionKey("bank_accounts", selectedMarket)]?.size || 0})
+                            </button>
+                          </div>
+                        )}
                         {getFilteredBankAccounts(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
@@ -2042,22 +2236,31 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
                                           <div className="flex items-start justify-between mb-3">
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <h4 className="text-sm font-semibold text-gray-900">
-                                                  {account.bankName}
-                                                </h4>
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(account.id, "bank_accounts", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(account.id, "bank_accounts", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                  <h4 className="text-sm font-semibold text-gray-900">
+                                                    {account.bankName}
+                                                  </h4>
                                                 {selectedFamilyMemberFilter === "all" && (
                                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
                                                     {getFamilyMemberName(account.familyMemberId)}
                                                   </span>
                                                 )}
+                                                </div>
+                                                {account.accountNumber && (
+                                                  <p className="text-xs text-gray-600 mb-1">
+                                                    Account: {account.accountNumber}
+                                                  </p>
+                                                )}
                                               </div>
-                                              {account.accountNumber && (
-                                                <p className="text-xs text-gray-600 mb-1">
-                                                  Account: {account.accountNumber}
-                                                </p>
-                                              )}
                                             </div>
                                             <div className="flex items-center space-x-1">
                                               {/* Up/Down buttons */}
@@ -2208,6 +2411,40 @@ export default function AssetsPage() {
 
                     {activeTab === "mutual_funds" && (
                       <div>
+                        {getFilteredMutualFunds(selectedMarket).length > 0 && (
+                          <div className="mb-4 flex items-center justify-between">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={areAllAssetsSelected(
+                                  getFilteredMutualFunds(selectedMarket).map(f => f.id),
+                                  "mutual_funds",
+                                  selectedMarket
+                                )}
+                                onChange={(e) => {
+                                  const filteredFunds = getFilteredMutualFunds(selectedMarket);
+                                  if (e.target.checked) {
+                                    selectAllAssets(filteredFunds.map(f => f.id), "mutual_funds", selectedMarket);
+                                  } else {
+                                    deselectAllAssets("mutual_funds", selectedMarket);
+                                  }
+                                }}
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">Select All</span>
+                            </label>
+                            <button
+                              onClick={() => deleteSelectedAssets("mutual_funds", selectedMarket)}
+                              disabled={
+                                !selectedAssets[getSelectionKey("mutual_funds", selectedMarket)] ||
+                                selectedAssets[getSelectionKey("mutual_funds", selectedMarket)]?.size === 0
+                              }
+                              className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete Selected ({selectedAssets[getSelectionKey("mutual_funds", selectedMarket)]?.size || 0})
+                            </button>
+                          </div>
+                        )}
                         {getFilteredMutualFunds(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <svg
@@ -2311,27 +2548,36 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
                                           <div className="flex items-start justify-between mb-3">
-                                            <div className="flex-1">
-                                              <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                                {fund.fundName}
-                                              </h4>
-                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                                <span>
-                                                  NAV: {currentMarket.symbol}
-                                                  {fund.nav.toLocaleString("en-IN", {
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(fund.id, "mutual_funds", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(fund.id, "mutual_funds", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <h4 className="text-sm font-semibold text-gray-900 mb-2">
+                                                  {fund.fundName}
+                                                </h4>
+                                                <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                  <span>
+                                                    NAV: {currentMarket.symbol}
+                                                    {fund.nav.toLocaleString("en-IN", {
+                                                      minimumFractionDigits: 2,
+                                                      maximumFractionDigits: 2,
+                                                    })}
+                                                  </span>
+                                                  <span>Units: {fund.units.toLocaleString("en-IN", {
                                                     minimumFractionDigits: 2,
                                                     maximumFractionDigits: 2,
-                                                  })}
-                                                </span>
-                                                <span>Units: {fund.units.toLocaleString("en-IN", {
-                                                  minimumFractionDigits: 2,
-                                                  maximumFractionDigits: 2,
-                                                })}</span>
-                                                {fund.purchaseDate && (
-                                                  <span>
-                                                    Purchase Date: {formatDateDDMMYYYY(fund.purchaseDate)}
-                                                  </span>
-                                                )}
+                                                  })}</span>
+                                                  {fund.purchaseDate && (
+                                                    <span>
+                                                      Purchase Date: {formatDateDDMMYYYY(fund.purchaseDate)}
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-1">
@@ -2491,6 +2737,40 @@ export default function AssetsPage() {
 
                     {activeTab === "fixed_deposits" && (
                       <div>
+                        {getFilteredFixedDeposits(selectedMarket).length > 0 && (
+                          <div className="mb-4 flex items-center justify-between">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={areAllAssetsSelected(
+                                  getFilteredFixedDeposits(selectedMarket).map(fd => fd.id),
+                                  "fixed_deposits",
+                                  selectedMarket
+                                )}
+                                onChange={(e) => {
+                                  const filteredFDs = getFilteredFixedDeposits(selectedMarket);
+                                  if (e.target.checked) {
+                                    selectAllAssets(filteredFDs.map(fd => fd.id), "fixed_deposits", selectedMarket);
+                                  } else {
+                                    deselectAllAssets("fixed_deposits", selectedMarket);
+                                  }
+                                }}
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">Select All</span>
+                            </label>
+                            <button
+                              onClick={() => deleteSelectedAssets("fixed_deposits", selectedMarket)}
+                              disabled={
+                                !selectedAssets[getSelectionKey("fixed_deposits", selectedMarket)] ||
+                                selectedAssets[getSelectionKey("fixed_deposits", selectedMarket)]?.size === 0
+                              }
+                              className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete Selected ({selectedAssets[getSelectionKey("fixed_deposits", selectedMarket)]?.size || 0})
+                            </button>
+                          </div>
+                        )}
                         {getFilteredFixedDeposits(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
@@ -2588,34 +2868,43 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
                                           <div className="flex items-start justify-between mb-3">
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <h4 className="text-sm font-semibold text-gray-900">
-                                                  {fd.bankName}
-                                                </h4>
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(fd.id, "fixed_deposits", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(fd.id, "fixed_deposits", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                  <h4 className="text-sm font-semibold text-gray-900">
+                                                    {fd.bankName}
+                                                  </h4>
                                                 {selectedFamilyMemberFilter === "all" && (
                                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
                                                     {getFamilyMemberName(fd.familyMemberId)}
                                                   </span>
                                                 )}
-                                              </div>
-                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                                <span>
-                                                  Amount: {currentMarket.symbol}
-                                                  {fd.amountInvested.toLocaleString("en-IN", {
-                                                    minimumFractionDigits: 2,
-                                                    maximumFractionDigits: 2,
-                                                  })}
-                                                </span>
-                                                <span>Rate: {fd.rateOfInterest}% p.a.</span>
-                                                <span>Duration: {fd.duration} months</span>
-                                              </div>
-                                              <div className="mt-2 text-xs text-gray-500">
-                                                <span>Start: {formatDateDDMMYYYY(fd.startDate)}</span>
-                                                <span className="ml-4">Maturity: {formatDateDDMMYYYY(fd.maturityDate)}</span>
-                                                {isMatured && (
-                                                  <span className="ml-2 text-green-600 font-medium">(Matured)</span>
-                                                )}
+                                                </div>
+                                                <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                  <span>
+                                                    Amount: {currentMarket.symbol}
+                                                    {fd.amountInvested.toLocaleString("en-IN", {
+                                                      minimumFractionDigits: 2,
+                                                      maximumFractionDigits: 2,
+                                                    })}
+                                                  </span>
+                                                  <span>Rate: {fd.rateOfInterest}% p.a.</span>
+                                                  <span>Duration: {fd.duration} months</span>
+                                                </div>
+                                                <div className="mt-2 text-xs text-gray-500">
+                                                  <span>Start: {formatDateDDMMYYYY(fd.startDate)}</span>
+                                                  <span className="ml-4">Maturity: {formatDateDDMMYYYY(fd.maturityDate)}</span>
+                                                  {isMatured && (
+                                                    <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-1">
@@ -2873,34 +3162,43 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:border-gray-300 transition-colors">
                                           <div className="flex items-start justify-between mb-3">
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <h4 className="text-sm font-semibold text-gray-900">
-                                                  {policy.insuranceName}
-                                                </h4>
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(policy.id, "insurance_policies", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(policy.id, "insurance_policies", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-2">
+                                                  <h4 className="text-sm font-semibold text-gray-900">
+                                                    {policy.insuranceName}
+                                                  </h4>
                                                 {selectedFamilyMemberFilter === "all" && (
                                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
                                                     {getFamilyMemberName(policy.familyMemberId)}
                                                   </span>
                                                 )}
-                                              </div>
-                                              <div className="flex items-center space-x-4 text-xs text-gray-600">
-                                                <span>Policy #: {policy.policyNumber}</span>
-                                                {policy.nominee && <span>Nominee: {policy.nominee}</span>}
-                                              </div>
-                                              <div className="mt-2 text-xs text-gray-500">
-                                                <span>Issue Date: {formatDateDDMMYYYY(policy.issueDate)}</span>
-                                                {maturityDate && (
-                                                  <>
-                                                    <span className="ml-4">Maturity: {formatDateDDMMYYYY(policy.dateOfMaturity || "")}</span>
-                                                    {isMatured && (
-                                                      <span className="ml-2 text-green-600 font-medium">(Matured)</span>
-                                                    )}
-                                                  </>
-                                                )}
-                                                {policy.premiumPaymentDate && (
-                                                  <span className="ml-4">Next Premium: {formatDateDDMMYYYY(policy.premiumPaymentDate)}</span>
-                                                )}
+                                                </div>
+                                                <div className="flex items-center space-x-4 text-xs text-gray-600">
+                                                  <span>Policy #: {policy.policyNumber}</span>
+                                                  {policy.nominee && <span>Nominee: {policy.nominee}</span>}
+                                                </div>
+                                                <div className="mt-2 text-xs text-gray-500">
+                                                  <span>Issue Date: {formatDateDDMMYYYY(policy.issueDate)}</span>
+                                                  {maturityDate && (
+                                                    <>
+                                                      <span className="ml-4">Maturity: {formatDateDDMMYYYY(policy.dateOfMaturity || "")}</span>
+                                                      {isMatured && (
+                                                        <span className="ml-2 text-green-600 font-medium">(Matured)</span>
+                                                      )}
+                                                    </>
+                                                  )}
+                                                  {policy.premiumPaymentDate && (
+                                                    <span className="ml-4">Next Premium: {formatDateDDMMYYYY(policy.premiumPaymentDate)}</span>
+                                                  )}
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center space-x-1">
@@ -3065,6 +3363,40 @@ export default function AssetsPage() {
 
                     {activeTab === "commodities" && (
                       <div>
+                        {getFilteredCommodities(selectedMarket).length > 0 && (
+                          <div className="mb-4 flex items-center justify-between">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={areAllAssetsSelected(
+                                  getFilteredCommodities(selectedMarket).map(c => c.id),
+                                  "commodities",
+                                  selectedMarket
+                                )}
+                                onChange={(e) => {
+                                  const filteredCommodities = getFilteredCommodities(selectedMarket);
+                                  if (e.target.checked) {
+                                    selectAllAssets(filteredCommodities.map(c => c.id), "commodities", selectedMarket);
+                                  } else {
+                                    deselectAllAssets("commodities", selectedMarket);
+                                  }
+                                }}
+                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                              />
+                              <span className="text-sm text-gray-700">Select All</span>
+                            </label>
+                            <button
+                              onClick={() => deleteSelectedAssets("commodities", selectedMarket)}
+                              disabled={
+                                !selectedAssets[getSelectionKey("commodities", selectedMarket)] ||
+                                selectedAssets[getSelectionKey("commodities", selectedMarket)]?.size === 0
+                              }
+                              className="px-4 py-2 text-sm bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Delete Selected ({selectedAssets[getSelectionKey("commodities", selectedMarket)]?.size || 0})
+                            </button>
+                          </div>
+                        )}
                         {getFilteredCommodities(selectedMarket).length === 0 ? (
                           <div className="text-center py-12">
                             <div className="mx-auto h-16 w-16 mb-4 flex items-center justify-center bg-gray-100 rounded-full">
@@ -3160,37 +3492,46 @@ export default function AssetsPage() {
                                       >
                                         <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
                                           <div className="flex items-start justify-between">
-                                            <div className="flex-1">
-                                              <div className="flex items-center gap-2 mb-1">
-                                                <h4 className="text-base font-semibold text-gray-900">
-                                                  {commodity.commodityName}
-                                                </h4>
+                                            <div className="flex items-center gap-3 flex-1">
+                                              <input
+                                                type="checkbox"
+                                                checked={isAssetSelected(commodity.id, "commodities", selectedMarket)}
+                                                onChange={() => toggleAssetSelection(commodity.id, "commodities", selectedMarket)}
+                                                className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500 cursor-pointer"
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-2 mb-1">
+                                                  <h4 className="text-base font-semibold text-gray-900">
+                                                    {commodity.commodityName}
+                                                  </h4>
                                                 {selectedFamilyMemberFilter === "all" && (
                                                   <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
                                                     {getFamilyMemberName(commodity.familyMemberId)}
                                                   </span>
                                                 )}
-                                              </div>
-                                              <div className="space-y-1 text-sm text-gray-600">
-                                                <p>
-                                                  <span className="font-medium">Form:</span> {commodity.form}
-                                                </p>
-                                                <p>
-                                                  <span className="font-medium">Quantity:</span> {commodity.quantity.toLocaleString("en-IN", {
-                                                    minimumFractionDigits: 2,
-                                                    maximumFractionDigits: 4,
-                                                  })} {commodity.units}
-                                                </p>
-                                                <p>
-                                                  <span className="font-medium">Purchase Date:</span> {formatDateDDMMYYYY(commodity.purchaseDate)}
-                                                </p>
-                                                <p>
-                                                  <span className="font-medium">Purchase Price:</span> {currentMarket.symbol}
-                                                  {commodity.purchasePrice.toLocaleString("en-IN", {
-                                                    minimumFractionDigits: 2,
-                                                    maximumFractionDigits: 2,
-                                                  })}
-                                                </p>
+                                                </div>
+                                                <div className="space-y-1 text-sm text-gray-600">
+                                                  <p>
+                                                    <span className="font-medium">Form:</span> {commodity.form}
+                                                  </p>
+                                                  <p>
+                                                    <span className="font-medium">Quantity:</span> {commodity.quantity.toLocaleString("en-IN", {
+                                                      minimumFractionDigits: 2,
+                                                      maximumFractionDigits: 4,
+                                                    })} {commodity.units}
+                                                  </p>
+                                                  <p>
+                                                    <span className="font-medium">Purchase Date:</span> {formatDateDDMMYYYY(commodity.purchaseDate)}
+                                                  </p>
+                                                  <p>
+                                                    <span className="font-medium">Purchase Price:</span> {currentMarket.symbol}
+                                                    {commodity.purchasePrice.toLocaleString("en-IN", {
+                                                      minimumFractionDigits: 2,
+                                                      maximumFractionDigits: 2,
+                                                    })}
+                                                  </p>
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center gap-2 ml-4">
