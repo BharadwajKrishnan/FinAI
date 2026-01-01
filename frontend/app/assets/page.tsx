@@ -347,8 +347,11 @@ export default function AssetsPage() {
     if (selectedFamilyMemberFilter === "all") {
       return assets;
     }
-    if (selectedFamilyMemberFilter === "") {
-      // Show only unassigned assets (Self) - assets with no family_member_id
+    // Find the Self member (relationship === "Self")
+    const selfMember = familyMembers.find(m => m.relationship.toLowerCase() === "self");
+    
+    // If selected filter is the Self member's ID, show assets with no family_member_id
+    if (selfMember && selectedFamilyMemberFilter === selfMember.id) {
       return assets.filter(asset => {
         const memberId = asset.familyMemberId;
         // Asset belongs to Self if familyMemberId is null, undefined, or empty string
@@ -1689,7 +1692,6 @@ export default function AssetsPage() {
                     className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                   >
                     <option value="all">All Family Members</option>
-                    <option value="">Self</option>
                     {familyMembers.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name} ({member.relationship})
@@ -1737,8 +1739,6 @@ export default function AssetsPage() {
                       <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">
                         {selectedFamilyMemberFilter === "all" 
                           ? "Total Family Net Worth" 
-                          : selectedFamilyMemberFilter === ""
-                          ? "Self Net Worth"
                           : familyMembers.find(m => m.id === selectedFamilyMemberFilter) 
                             ? `${familyMembers.find(m => m.id === selectedFamilyMemberFilter)?.name}'s Net Worth`
                             : "Net Worth"}
@@ -1746,8 +1746,6 @@ export default function AssetsPage() {
                       <p className="text-xs text-gray-400 mt-1">
                         {selectedFamilyMemberFilter === "all" 
                           ? "Combined" 
-                          : selectedFamilyMemberFilter === ""
-                          ? "Your Assets"
                           : "Filtered View"}
                       </p>
                     </div>
@@ -5654,7 +5652,6 @@ export default function AssetsPage() {
                     onChange={(e) => setSelectedFamilyMemberId(e.target.value || undefined)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                   >
-                    <option value="">Self</option>
                     {familyMembers.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name} ({member.relationship})

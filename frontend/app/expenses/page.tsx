@@ -148,8 +148,11 @@ export default function ExpensesPage() {
     if (selectedFamilyMemberFilter === "all") {
       return expensesList;
     }
-    if (selectedFamilyMemberFilter === "") {
-      // Show only unassigned expenses (Self) - expenses with no family_member_id
+    // Find the Self member (relationship === "Self")
+    const selfMember = familyMembers.find(m => m.relationship.toLowerCase() === "self");
+    
+    // If selected filter is the Self member's ID, show expenses with no family_member_id
+    if (selfMember && selectedFamilyMemberFilter === selfMember.id) {
       return expensesList.filter(expense => {
         const memberId = expense.family_member_id;
         // Expense belongs to Self if family_member_id is null, undefined, or empty string
@@ -536,7 +539,6 @@ export default function ExpensesPage() {
                   className="px-3 py-1.5 text-sm border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                 >
                   <option value="all">All Family Members</option>
-                  <option value="">Self</option>
                   {familyMembers.map((member) => (
                     <option key={member.id} value={member.id}>
                       {member.name} ({member.relationship})
@@ -583,8 +585,6 @@ export default function ExpensesPage() {
                     <h2 className="text-xl font-semibold text-gray-900">
                       {selectedFamilyMemberFilter === "all"
                         ? `${monthNames[selectedMonth - 1]} ${selectedYear} - All Family`
-                        : selectedFamilyMemberFilter === ""
-                        ? `${monthNames[selectedMonth - 1]} ${selectedYear} - Self`
                         : familyMembers.find(m => m.id === selectedFamilyMemberFilter)
                           ? `${monthNames[selectedMonth - 1]} ${selectedYear} - ${familyMembers.find(m => m.id === selectedFamilyMemberFilter)?.name}`
                           : `${monthNames[selectedMonth - 1]} ${selectedYear}`}
@@ -902,7 +902,6 @@ export default function ExpensesPage() {
                     onChange={(e) => setSelectedFamilyMemberId(e.target.value || undefined)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                   >
-                    <option value="">Self</option>
                     {familyMembers.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name} ({member.relationship})
