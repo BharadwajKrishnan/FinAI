@@ -258,6 +258,97 @@ function BankAccountPasswordModal({ onConfirm, onCancel }: BankAccountPasswordMo
   );
 }
 
+// Mutual Fund Password Modal Component
+interface MutualFundPasswordModalProps {
+  onConfirm: (isPasswordProtected: boolean, password?: string) => void;
+  onCancel: () => void;
+}
+
+function MutualFundPasswordModal({ onConfirm, onCancel }: MutualFundPasswordModalProps) {
+  const [isPasswordProtected, setIsPasswordProtected] = useState<boolean | null>(null);
+  const [password, setPassword] = useState("");
+
+  const handleYes = () => {
+    setIsPasswordProtected(true);
+  };
+
+  const handleNo = () => {
+    onConfirm(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isPasswordProtected && password.trim()) {
+      onConfirm(true, password);
+    }
+  };
+
+  if (isPasswordProtected === null) {
+    return (
+      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">PDF Password Protection</h3>
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Is this PDF password-protected?
+          </p>
+          <div className="flex space-x-3">
+            <button
+              onClick={handleYes}
+              className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+            >
+              Yes
+            </button>
+            <button
+              onClick={handleNo}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+            >
+              No
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+      <h3 className="text-lg font-semibold text-gray-900 mb-4">Enter PDF Password</h3>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="mutual-fund-pdf-password" className="block text-sm font-medium text-gray-700 mb-2">
+            Password
+          </label>
+          <input
+            type="password"
+            id="mutual-fund-pdf-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+            placeholder="Enter password"
+            autoFocus
+          />
+        </div>
+        <div className="flex space-x-3">
+          <button
+            type="submit"
+            disabled={!password.trim()}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Confirm
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 // Sortable Item Component
 function SortableItem({ 
   id, 
@@ -439,6 +530,10 @@ export default function AssetsPage() {
   // PDF password modal state for bank account uploads
   const [showBankAccountPasswordModal, setShowBankAccountPasswordModal] = useState(false);
   const [pendingBankAccountFile, setPendingBankAccountFile] = useState<File | null>(null);
+  
+  // PDF password modal state for mutual fund uploads
+  const [showMutualFundPasswordModal, setShowMutualFundPasswordModal] = useState(false);
+  const [pendingMutualFundFile, setPendingMutualFundFile] = useState<File | null>(null);
   
   // Stock-specific fields
   const [stockName, setStockName] = useState("");
@@ -1027,6 +1122,79 @@ export default function AssetsPage() {
     }
   };
 
+  // Handle PDF file selection for mutual funds (shows password modal)
+  const handleMutualFundFileSelect = (file: File) => {
+    setPendingMutualFundFile(file);
+    setShowMutualFundPasswordModal(true);
+  };
+
+  // Handle password modal confirmation for mutual funds
+  const handleMutualFundPasswordModalConfirm = (isPasswordProtected: boolean, password?: string) => {
+    if (pendingMutualFundFile) {
+      handleMutualFundPdfUpload(pendingMutualFundFile, isPasswordProtected ? password : null);
+      setPendingMutualFundFile(null);
+    }
+    setShowMutualFundPasswordModal(false);
+  };
+
+  // Handle password modal cancellation for mutual funds
+  const handleMutualFundPasswordModalCancel = () => {
+    setPendingMutualFundFile(null);
+    setShowMutualFundPasswordModal(false);
+    // Reset the file input if the user cancels
+    const input = document.getElementById("pdf-upload-fund-empty") as HTMLInputElement;
+    if (input) input.value = '';
+    const inputHeader = document.getElementById("pdf-upload-fund-header") as HTMLInputElement;
+    if (inputHeader) inputHeader.value = '';
+  };
+
+  // Handle PDF upload for mutual funds
+  const handleMutualFundPdfUpload = async (file: File, pdfPassword: string | null = null) => {
+    setIsUploadingPdf(true);
+    setUploadingPdfAssetType("mutual_fund");
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) {
+        alert("Please log in to upload files");
+        setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("asset_type", "mutual_fund");
+      formData.append("market", selectedMarket);
+      if (pdfPassword) {
+        formData.append("pdf_password", pdfPassword);
+      }
+
+      const response = await fetch("/api/assets/upload-pdf", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message || `Successfully added ${data.created_count} mutual fund(s) from PDF`);
+        // Refresh assets to show the newly created mutual funds
+        await fetchAssets();
+      } else {
+        alert(data.message || "Failed to process PDF. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error uploading PDF:", error);
+      alert("An error occurred while uploading the PDF. Please try again.");
+    } finally {
+      setIsUploadingPdf(false);
+      setUploadingPdfAssetType("");
+    }
+  };
+
   // Function to fetch assets - made accessible for refresh callback
   const fetchAssets = async () => {
     try {
@@ -1116,8 +1284,21 @@ export default function AssetsPage() {
             } else if (asset.type === "mutual_fund") {
               const navValue = parseFloat(asset.nav || "0");
               const unitsValue = parseFloat(asset.units || "0");
-              const totalInvested = navValue * unitsValue;
-              const currentWorth = navValue * unitsValue; // For now, same as invested (can update with current NAV later)
+              // Extract value_at_cost from notes field (stored as JSON: {"value_at_cost": "1234.56"})
+              let totalInvested = 0;
+              if (asset.notes) {
+                try {
+                  const notesData = JSON.parse(asset.notes);
+                  if (notesData.value_at_cost) {
+                    totalInvested = parseFloat(notesData.value_at_cost);
+                  }
+                } catch (e) {
+                  // If notes is not JSON or doesn't have value_at_cost, use 0
+                  console.warn("Could not parse value_at_cost from notes:", e);
+                }
+              }
+              // Use current_value directly from database (extracted by LLM, not calculated)
+              const currentWorth = parseFloat(asset.current_value || "0");
               
               const mutualFund = {
                 id: asset.id,
@@ -1125,8 +1306,8 @@ export default function AssetsPage() {
                 fundName: asset.name,
                 nav: navValue,
                 units: unitsValue,
-                totalInvested: totalInvested,
-                currentWorth: currentWorth,
+                totalInvested: totalInvested, // Value at Cost from PDF (stored in notes)
+                currentWorth: currentWorth, // Current Value from PDF (stored in current_value)
                 purchaseDate: asset.nav_purchase_date || new Date().toISOString().split('T')[0],
                 familyMemberId: asset.family_member_id ? String(asset.family_member_id) : undefined,
               };
@@ -2002,6 +2183,16 @@ export default function AssetsPage() {
         </div>
       )}
       
+      {/* PDF Password Modal for Mutual Fund Uploads */}
+      {showMutualFundPasswordModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <MutualFundPasswordModal
+            onConfirm={handleMutualFundPasswordModalConfirm}
+            onCancel={handleMutualFundPasswordModalCancel}
+          />
+        </div>
+      )}
+      
       {/* PDF Upload Loading Overlay */}
       {isUploadingPdf && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2015,6 +2206,8 @@ export default function AssetsPage() {
                 ? "Extracting fixed deposit information"
                 : uploadingPdfAssetType === "bank_account"
                 ? "Extracting bank account information"
+                : uploadingPdfAssetType === "mutual_fund"
+                ? "Extracting mutual fund information"
                 : "Extracting asset information"}
             </p>
           </div>
@@ -3037,9 +3230,10 @@ export default function AssetsPage() {
                                 accept=".pdf"
                                 className="hidden"
                                 onChange={(e) => {
-                                  // Placeholder for future functionality
                                   if (e.target.files && e.target.files[0]) {
-                                    console.log("PDF selected for mutual funds:", e.target.files[0]);
+                                    handleMutualFundFileSelect(e.target.files[0]);
+                                    // Reset input so the same file can be selected again
+                                    e.target.value = '';
                                   }
                                 }}
                               />
@@ -3082,9 +3276,10 @@ export default function AssetsPage() {
                                   accept=".pdf"
                                   className="hidden"
                                   onChange={(e) => {
-                                    // Placeholder for future functionality
                                     if (e.target.files && e.target.files[0]) {
-                                      console.log("PDF selected for mutual funds:", e.target.files[0]);
+                                      handleMutualFundFileSelect(e.target.files[0]);
+                                      // Reset input so the same file can be selected again
+                                      e.target.value = '';
                                     }
                                   }}
                                 />

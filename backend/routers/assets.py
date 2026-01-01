@@ -756,11 +756,14 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
                         response_mime_type="application/json"
                     )
                     
+                    # Get model name from environment or use default (gemini-2.5-flash has higher quota limits)
+                    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                    
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
                         None,
                         lambda: client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
+                            model=model_name,
                             contents=contents,
                             config=config,
                         )
@@ -968,6 +971,11 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
                     print(f"Error calling LLM for page {page_idx + 1}: {e}")
                     print(traceback.format_exc())
                     errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+                
+                # Add 5-second delay after processing each page to prevent LLM overload
+                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
+                    print(f"DEBUG: Waiting 5 seconds before processing next page...")
+                    await asyncio.sleep(5)
         
         elif asset_type == "stock":
             # Import LLM service for direct JSON calls
@@ -1000,9 +1008,10 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
 
 ⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
 
-1. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
-2. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
-3. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. EVERY SINGLE STOCK MUST BE INCLUDED.
+1. ⚠️ SECTION RESTRICTION: ONLY search for and extract stocks/equities from sections of the document that are specifically labeled as "Stocks", "Equities", "Stock Holdings", "Equity Portfolio", "Share Holdings", or similar stock/equity sections. DO NOT extract information from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+2. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+3. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+4. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. EVERY SINGLE STOCK MUST BE INCLUDED.
 
 Return the stocks/equities in a JSON format. Do not include any other text in your response. Only return the JSON.
 
@@ -1018,8 +1027,9 @@ Each JSON object MUST have the following keys with EXACT names:
 9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
 
 MANDATORY REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
-1. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
-2. You MUST provide "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", and "Value at Cost" for EVERY stock. These are mandatory fields.
+1. ⚠️ ONLY extract stocks/equities from stock/equity sections. DO NOT extract from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+2. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
+3. You MUST provide "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", and "Value at Cost" for EVERY stock. These are mandatory fields.
 3. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,515.55", extract it as "1,515.55" (do not convert to 1515.55, keep commas if present). If the document shows "1515.55", extract it as "1515.55".
 4. For "Average Price": Find the value next to "Avg. Price", "Average Price", or "Purchase Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
 5. For "Current Price": Find the value next to "Price", "Current Price", or "Market Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
@@ -1067,11 +1077,14 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                         response_mime_type="application/json"
                     )
                     
+                    # Get model name from environment or use default (gemini-2.5-flash has higher quota limits)
+                    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                    
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
                         None,
                         lambda: client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
+                            model=model_name,
                             contents=contents,
                             config=config,
                         )
@@ -1304,6 +1317,11 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                     print(f"Error calling LLM for page {page_idx + 1}: {e}")
                     print(traceback.format_exc())
                     errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+                
+                # Add 5-second delay after processing each page to prevent LLM overload
+                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
+                    print(f"DEBUG: Waiting 5 seconds before processing next page...")
+                    await asyncio.sleep(5)
         
         elif asset_type == "bank_account":
             # Import LLM service for direct JSON calls
@@ -1442,11 +1460,14 @@ Return a JSON array of bank account objects. If there are multiple NEW bank acco
                         response_mime_type="application/json"
                     )
                     
+                    # Get model name from environment or use default (gemini-2.5-flash has higher quota limits)
+                    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                    
                     loop = asyncio.get_event_loop()
                     response = await loop.run_in_executor(
                         None,
                         lambda: client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
+                            model=model_name,
                             contents=contents,
                             config=config,
                         )
@@ -1611,12 +1632,58 @@ Return a JSON array of bank account objects. If there are multiple NEW bank acco
                                     if field in asset_dict and asset_dict[field] is not None:
                                         asset_dict[field] = str(asset_dict[field])
                                 
+                                # Check for duplicates before inserting (check both existing DB records and newly created ones)
+                                is_duplicate = False
+                                # Check in existing bank accounts list
+                                for existing_account in existing_bank_accounts:
+                                    existing_account_number = existing_account.get("account_number", "")
+                                    existing_bank_name = existing_account.get("bank_name", "")
+                                    existing_account_type = existing_account.get("account_type", "")
+                                    # Match by account number if both have it, otherwise match by bank name + account type
+                                    if account_number and existing_account_number:
+                                        if account_number.lower() == existing_account_number.lower() and bank_name.lower() == existing_bank_name.lower():
+                                            print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Duplicate found in existing accounts - {bank_name} (Account: {account_number})")
+                                            is_duplicate = True
+                                            break
+                                    elif bank_name.lower() == existing_bank_name.lower() and account_type == existing_account_type:
+                                        print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Duplicate found in existing accounts - {bank_name} (Type: {account_type})")
+                                        is_duplicate = True
+                                        break
+                                
+                                # Check in newly created assets in this session
+                                if not is_duplicate:
+                                    for created_asset in created_assets:
+                                        if created_asset.get("type") == "bank_account":
+                                            created_account_number = created_asset.get("account_number", "")
+                                            created_bank_name = created_asset.get("bank_name", "")
+                                            created_account_type = created_asset.get("account_type", "")
+                                            # Match by account number if both have it, otherwise match by bank name + account type
+                                            if account_number and created_account_number:
+                                                if account_number.lower() == created_account_number.lower() and bank_name.lower() == created_bank_name.lower():
+                                                    print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Duplicate found in newly created assets - {bank_name} (Account: {account_number})")
+                                                    is_duplicate = True
+                                                    break
+                                            elif bank_name.lower() == created_bank_name.lower() and account_type == created_account_type:
+                                                print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Duplicate found in newly created assets - {bank_name} (Type: {account_type})")
+                                                is_duplicate = True
+                                                break
+                                
+                                if is_duplicate:
+                                    print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Skipping duplicate bank account - {bank_name}")
+                                    continue
+                                
                                 # Insert into database
                                 print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Inserting into database - {bank_name}")
                                 response = supabase_service.table("assets").insert(asset_dict).execute()
                                 if response.data and len(response.data) > 0:
                                     print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Successfully created - {bank_name}")
                                     created_assets.append(response.data[0])
+                                    # Also add to existing_bank_accounts list to prevent duplicates in subsequent pages
+                                    existing_bank_accounts.append({
+                                        "bank_name": bank_name,
+                                        "account_number": account_number,
+                                        "account_type": account_type
+                                    })
                                 else:
                                     error_msg = f"Page {page_idx + 1}: Failed to create bank account: {bank_name}"
                                     print(f"DEBUG: {error_msg}")
@@ -1642,6 +1709,435 @@ Return a JSON array of bank account objects. If there are multiple NEW bank acco
                     print(f"Error calling LLM for page {page_idx + 1}: {e}")
                     print(traceback.format_exc())
                     errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+                
+                # Add 5-second delay after processing each page to prevent LLM overload
+                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
+                    print(f"DEBUG: Waiting 5 seconds before processing next page...")
+                    await asyncio.sleep(5)
+        
+        elif asset_type == "mutual_fund":
+            # Import LLM service for direct JSON calls
+            from google import genai
+            from google.genai import types
+            import asyncio
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
+            
+            client = genai.Client(api_key=api_key)
+            
+            # Fetch existing mutual funds to prevent duplicates
+            existing_mutual_funds = []
+            try:
+                existing_assets_response = supabase_service.table("assets").select("mutual_fund_code, name, fund_house").eq("user_id", user_id).eq("type", "mutual_fund").eq("is_active", True).execute()
+                existing_mutual_funds = existing_assets_response.data if existing_assets_response.data else []
+                print(f"DEBUG: Found {len(existing_mutual_funds)} existing mutual funds")
+            except Exception as e:
+                print(f"Error fetching existing mutual funds: {e}")
+            
+            # Format existing mutual funds for the prompt
+            existing_funds_text = ""
+            if existing_mutual_funds:
+                existing_funds_list = []
+                for fund in existing_mutual_funds:
+                    fund_name = fund.get("name", "Unknown")
+                    fund_code = fund.get("mutual_fund_code", "")
+                    fund_house = fund.get("fund_house", "")
+                    if fund_code:
+                        if fund_house:
+                            existing_funds_list.append(f"- Name: {fund_name}, Fund Code: {fund_code}, Fund House: {fund_house}")
+                        else:
+                            existing_funds_list.append(f"- Name: {fund_name}, Fund Code: {fund_code}")
+                    else:
+                        existing_funds_list.append(f"- Name: {fund_name}")
+                existing_funds_text = "\n".join(existing_funds_list)
+            
+            # Process each page
+            print(f"DEBUG: Starting to process {len(pdf_pages)} pages from PDF for mutual funds")
+            
+            # Store context from previous pages (input and output pairs)
+            previous_contexts = []
+            
+            for page_idx, page_content in enumerate(pdf_pages):
+                print(f"DEBUG: Processing page {page_idx + 1} of {len(pdf_pages)} for mutual funds")
+                if not page_content or not page_content.strip():
+                    print(f"DEBUG: Page {page_idx + 1} is empty, skipping")
+                    continue
+                
+                print(f"DEBUG: Page {page_idx + 1} content length: {len(page_content)} characters")
+                try:
+                    # Build instruction prompt
+                    instruction_prompt = f"""Your task is to extract mutual fund information from the document. DO NOT include stocks, bank accounts, fixed deposits, or any other investment types. Only extract mutual funds.
+
+⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
+
+1. ⚠️ HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
+2. ⚠️ SECTION RESTRICTION: ONLY search for and extract mutual funds from sections of the document that are specifically labeled as "Mutual Funds", "Mutual Fund Holdings", "MF Portfolio", "Scheme Holdings", or similar mutual fund sections. DO NOT extract information from stock sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a mutual fund section, return an empty JSON array [].
+3. ⚠️ SIP-BASED MUTUAL FUNDS: Note that mutual funds can be SIP-based (Systematic Investment Plan) or lump-sum investments. Both types should be extracted. SIP-based mutual funds are still mutual funds and should be included.
+4. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+5. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+6. ⚠️ DUPLICATE PREVENTION: Check the following list of ALREADY ADDED mutual funds. If a mutual fund from the document matches any of these (same fund code, or same fund name and fund house if code is not available), DO NOT include it in your response. Return an empty JSON array [] if all mutual funds on this page are already added.
+7. YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
+
+ALREADY ADDED MUTUAL FUNDS:
+{existing_funds_text if existing_funds_text else "No mutual funds have been added yet."}
+
+IMPORTANT: A mutual fund is considered a duplicate if:
+- The fund code matches (if fund code is available in both)
+- OR the fund name matches AND fund house matches (if fund code is not available in either)
+
+If you find a duplicate, skip it and do not include it in your response. Only return NEW mutual funds that are not in the list above.
+
+Return the mutual funds in a JSON format. Do not include any other text in your response. Only return the JSON.
+
+Each JSON object MUST have the following keys with EXACT names:
+
+REQUIRED FIELDS (must be present for every mutual fund):
+1. "Fund Name" - REQUIRED - Extract the name of the mutual fund EXACTLY as shown in the document
+2. "Fund Code" - REQUIRED - Extract the mutual fund code/identifier EXACTLY as shown in the document. Look for "Fund Code", "Scheme Code", "ISIN", or "Code" labels. ⚠️ CRITICAL: If you cannot find a fund code in the document for a mutual fund, DO NOT include that mutual fund in your response. Only return mutual funds that have a fund code clearly visible in the document.
+3. "Units" - REQUIRED - Extract the number of units held EXACTLY as shown in the document. Look for "Units", "No. of Units", or "Quantity" labels. Extract the EXACT value - do not round, modify, or calculate.
+
+OPTIONAL FIELDS (include if available in the document):
+4. "Fund House" - Optional - Extract the fund house/AMC (Asset Management Company) name EXACTLY as shown in the document. Look for "Fund House", "AMC", "Asset Management Company", or "Scheme Name" labels.
+5. "NAV" - Optional - Extract the Net Asset Value per unit EXACTLY as shown in the document. Look for "NAV", "Net Asset Value", or "Current NAV" labels. Extract the EXACT value - do not round, modify, or calculate.
+6. "Purchase Date" - Optional - Extract the purchase date in YYYY-MM-DD format. Look for "Purchase Date", "Date of Investment", or "Investment Date" labels. If not available, leave as null.
+7. "Value at Cost" - Optional - Extract the total amount invested (value at cost) EXACTLY as shown in the document. Look for "Value at Cost", "Amount Invested", "Total Invested", "Investment Amount", or "Purchase Value" labels. Extract the EXACT value - do not round, modify, or calculate. DO NOT calculate this as Units * NAV. The document already contains this value - extract it EXACTLY as it appears.
+8. "Current Value" - Optional - Extract the current market value EXACTLY as shown in the document. Look for "Current Value", "Current Worth", or "Market Value" labels. Extract the EXACT value - do not round, modify, or calculate.
+9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
+
+CRITICAL REQUIREMENTS:
+1. ⚠️ HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
+2. ⚠️ ONLY extract mutual funds from mutual fund sections. DO NOT extract from stock sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a mutual fund section, return an empty JSON array [].
+3. ⚠️ SIP-based mutual funds are still mutual funds and should be extracted. Look for mutual funds regardless of whether they are SIP-based or lump-sum investments.
+4. You MUST provide "Fund Name", "Fund Code", and "Units" for EVERY mutual fund. These are mandatory fields. ⚠️ IF A FUND CODE IS NOT AVAILABLE IN THE DOCUMENT, DO NOT INCLUDE THAT MUTUAL FUND IN YOUR RESPONSE.
+5. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,234.56", extract it as "1,234.56" (preserve formatting as shown).
+6. For "Fund Code": Extract the fund code EXACTLY as shown. Look for labels like "Fund Code", "Scheme Code", "ISIN", or "Code". ⚠️ THIS FIELD IS REQUIRED - if you cannot find a fund code in the document, DO NOT include that mutual fund in your response.
+7. For "Units": Find the number of units in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+8. For "NAV": Extract the NAV per unit EXACTLY as shown. This is a key identifier for mutual funds - if NAV is present, the investment is a mutual fund. DO NOT calculate or modify it.
+9. For "Value at Cost": Extract the total amount invested (value at cost) EXACTLY as shown. Look for "Value at Cost", "Amount Invested", "Total Invested", or "Investment Amount" labels. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+10. For "Current Value": Extract the current market value EXACTLY as shown. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+11. ⚠️ REMEMBER: If an investment has a NAV (Net Asset Value) property, it is a mutual fund. Use NAV as the key identifier to distinguish mutual funds from stocks, bank accounts, fixed deposits, or other investment types.
+12. ⚠️ DUPLICATE CHECK: Before including any mutual fund in your response, check if it already exists in the "ALREADY ADDED MUTUAL FUNDS" list above. Compare by:
+   - Fund code (if available in both)
+   - OR fund name and fund house (if fund code is not available)
+   - If a match is found, DO NOT include that mutual fund in your response.
+13. ⚠️ YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
+10. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
+
+Return a JSON array of mutual fund objects. If there are multiple NEW mutual funds on this page (not duplicates), return ALL of them in the array. If all mutual funds on this page are duplicates, return an empty array []. DO NOT skip any new mutual fund, but DO skip duplicates."""
+                    
+                    # Build conversation messages list as list of dictionaries (conversational format)
+                    contents = []
+                    
+                    # Add instruction as first user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": instruction_prompt}]
+                    })
+                    
+                    # Add previous context as conversation history (user-assistant pairs)
+                    if page_idx > 0 and previous_contexts:
+                        for prev_idx, (prev_input, prev_output) in enumerate(previous_contexts):
+                            # Add previous user message (page content)
+                            contents.append({
+                                "role": "user",
+                                "parts": [{"text": f"Here is a summary of all the mutual funds from page {prev_idx + 1}:\n\n{prev_input}"}]
+                            })
+                            # Add previous assistant response (LLM output)
+                            contents.append({
+                                "role": "model",
+                                "parts": [{"text": prev_output}]
+                            })
+                    
+                    # Add current page as user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"Here is a summary of all the mutual funds from page {page_idx + 1}:\n\n{page_content}"}]
+                    })
+                    
+                    # Call Gemini with JSON mode
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                    
+                    # Get model name from environment or use default (gemini-2.5-flash has higher quota limits)
+                    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                    
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: client.models.generate_content(
+                            model=model_name,
+                            contents=contents,
+                            config=config,
+                        )
+                    )
+                    
+                    # Extract JSON response
+                    text_response = ""
+                    if hasattr(response, 'text') and response.text:
+                        text_response = response.text
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                            text_response = "".join(text_parts)
+                    
+                    if not text_response:
+                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                        continue
+                    
+                    # Parse JSON response
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = text_response.strip()
+                        if cleaned_response.startswith("```json"):
+                            cleaned_response = cleaned_response[7:]
+                        if cleaned_response.startswith("```"):
+                            cleaned_response = cleaned_response[3:]
+                        if cleaned_response.endswith("```"):
+                            cleaned_response = cleaned_response[:-3]
+                        cleaned_response = cleaned_response.strip()
+                        
+                        mutual_funds = json.loads(cleaned_response)
+                        # Handle both single object and array
+                        if not isinstance(mutual_funds, list):
+                            mutual_funds = [mutual_funds]
+                        
+                        print(f"DEBUG: Page {page_idx + 1}: LLM returned {len(mutual_funds)} mutual fund(s)")
+                        
+                        # Store input and output for future context (for pages after the first)
+                        previous_contexts.append((page_content, cleaned_response))
+                        print(f"DEBUG: Page {page_idx + 1}: Stored context for future pages (total contexts: {len(previous_contexts)})")
+                        
+                        # Skip if empty array (no mutual funds on this page)
+                        if len(mutual_funds) == 0:
+                            print(f"DEBUG: Page {page_idx + 1}: Empty array returned (no mutual funds on this page), continuing to next page")
+                            continue
+                        
+                        # Process each mutual fund
+                        for mf_idx, mf_data in enumerate(mutual_funds):
+                            print(f"DEBUG: Page {page_idx + 1}, Mutual Fund {mf_idx + 1}: Processing {mf_data}")
+                            try:
+                                # Get currency from market
+                                asset_market = market or "india"
+                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
+                                
+                                # Extract and validate fields (handle multiple possible key names)
+                                fund_name = mf_data.get("Fund Name") or mf_data.get("fund_name") or mf_data.get("Name") or mf_data.get("Scheme Name") or "Unknown Fund"
+                                fund_code = mf_data.get("Fund Code") or mf_data.get("fund_code") or mf_data.get("Scheme Code") or mf_data.get("ISIN") or mf_data.get("Code") or mf_data.get("code")
+                                fund_house = mf_data.get("Fund House") or mf_data.get("fund_house") or mf_data.get("AMC") or mf_data.get("Asset Management Company")
+                                units = mf_data.get("Units") or mf_data.get("units") or mf_data.get("No. of Units") or mf_data.get("Quantity") or mf_data.get("quantity")
+                                nav = mf_data.get("NAV") or mf_data.get("nav") or mf_data.get("Net Asset Value") or mf_data.get("Current NAV")
+                                purchase_date_str = mf_data.get("Purchase Date") or mf_data.get("purchase_date") or mf_data.get("Date of Investment") or mf_data.get("Investment Date")
+                                value_at_cost = mf_data.get("Value at Cost") or mf_data.get("value_at_cost") or mf_data.get("Amount Invested") or mf_data.get("Total Invested") or mf_data.get("Investment Amount") or mf_data.get("Purchase Value")
+                                current_value = mf_data.get("Current Value") or mf_data.get("Current Worth") or mf_data.get("Market Value") or mf_data.get("current_value")
+                                owner_name = mf_data.get("Owner Name") or mf_data.get("owner_name") or "self"
+                                
+                                print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Extracted fields - name={fund_name}, code={fund_code}, units={units}, nav={nav}, value_at_cost={value_at_cost}, current_value={current_value}")
+                                
+                                # Validate required fields (fund_code is required)
+                                if not fund_name or not fund_code or units is None:
+                                    error_msg = f"Page {page_idx + 1}, MF {mf_idx + 1}: Missing required fields (fund_name, fund_code, or units)"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Helper function to clean numeric strings (remove commas, spaces, currency symbols)
+                                def clean_numeric_string(value):
+                                    if isinstance(value, str):
+                                        # Remove commas, spaces, and other non-numeric characters except decimal point
+                                        cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
+                                        return cleaned
+                                    return str(value)
+                                
+                                # Convert units to float (clean numeric strings first)
+                                try:
+                                    units_cleaned = clean_numeric_string(units)
+                                    units_float = float(units_cleaned)
+                                    print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Using extracted Units: {units_float}")
+                                except (ValueError, TypeError) as e:
+                                    error_msg = f"Page {page_idx + 1}, MF {mf_idx + 1}: Invalid units value: {units}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Convert NAV to float if provided (clean numeric strings first)
+                                nav_float = None
+                                if nav:
+                                    try:
+                                        nav_cleaned = clean_numeric_string(nav)
+                                        nav_float = float(nav_cleaned)
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Using extracted NAV: {nav_float}")
+                                    except (ValueError, TypeError):
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Could not parse NAV: {nav}, leaving as None")
+                                
+                                # Convert value_at_cost to float if provided (clean numeric strings first)
+                                value_at_cost_float = None
+                                if value_at_cost:
+                                    try:
+                                        value_at_cost_cleaned = clean_numeric_string(value_at_cost)
+                                        value_at_cost_float = float(value_at_cost_cleaned)
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Using extracted Value at Cost: {value_at_cost_float}")
+                                    except (ValueError, TypeError):
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Could not parse Value at Cost: {value_at_cost}, leaving as None")
+                                
+                                # Convert current_value to float if provided (clean numeric strings first)
+                                current_value_float = None
+                                if current_value:
+                                    try:
+                                        current_value_cleaned = clean_numeric_string(current_value)
+                                        current_value_float = float(current_value_cleaned)
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Using extracted Current Value: {current_value_float}")
+                                    except (ValueError, TypeError):
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Could not parse Current Value: {current_value}, setting to 0")
+                                        current_value_float = 0.0
+                                else:
+                                    # If not provided, set to 0 (do not calculate)
+                                    current_value_float = 0.0
+                                    print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Current Value not found in document, setting to 0")
+                                
+                                # Parse purchase date if provided
+                                purchase_date = None
+                                if purchase_date_str:
+                                    try:
+                                        purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
+                                    except:
+                                        try:
+                                            purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
+                                        except:
+                                            try:
+                                                purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
+                                            except:
+                                                print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Could not parse purchase date: {purchase_date_str}, leaving as None")
+                                
+                                # Map owner name to family member ID
+                                family_member_id = None
+                                owner_name_lower = owner_name.lower().strip()
+                                if owner_name_lower in ["self", "me", "myself", ""]:
+                                    family_member_id = None
+                                elif owner_name_lower in family_members_map:
+                                    family_member_id = family_members_map[owner_name_lower]
+                                else:
+                                    # Try partial match
+                                    for fm_name, fm_id in family_members_map.items():
+                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                            family_member_id = fm_id
+                                            break
+                                
+                                # Build asset data
+                                asset_data = {
+                                    "name": fund_name,
+                                    "type": "mutual_fund",
+                                    "currency": currency,
+                                    "mutual_fund_code": fund_code,
+                                    "units": units_float,
+                                    "is_active": True,
+                                    "family_member_id": family_member_id
+                                }
+                                
+                                # Add optional fields if provided
+                                if fund_house:
+                                    asset_data["fund_house"] = fund_house
+                                if nav_float is not None:
+                                    asset_data["nav"] = nav_float
+                                if purchase_date:
+                                    asset_data["nav_purchase_date"] = purchase_date.isoformat()
+                                if current_value_float is not None:
+                                    asset_data["current_value"] = current_value_float
+                                
+                                # Store value_at_cost in notes field as JSON (since database doesn't have a separate field)
+                                # Format: {"value_at_cost": "1234.56"}
+                                if value_at_cost_float is not None:
+                                    notes_data = {"value_at_cost": str(value_at_cost_float)}
+                                    asset_data["notes"] = json.dumps(notes_data)
+                                    print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Stored Value at Cost in notes: {value_at_cost_float}")
+                                
+                                # Create AssetCreate object
+                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                                asset_create.model_validate_asset_fields()
+                                
+                                # Convert to dict
+                                try:
+                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                                except AttributeError:
+                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                                
+                                asset_dict["user_id"] = user_id
+                                
+                                # Convert decimals to strings
+                                decimal_fields = ['units', 'nav', 'current_value']
+                                for field in decimal_fields:
+                                    if field in asset_dict and asset_dict[field] is not None:
+                                        asset_dict[field] = str(asset_dict[field])
+                                
+                                # Check for duplicates before inserting (check both existing DB records and newly created ones)
+                                is_duplicate = False
+                                # Check in existing mutual funds list
+                                for existing_fund in existing_mutual_funds:
+                                    existing_code = existing_fund.get("mutual_fund_code", "")
+                                    if existing_code and fund_code and existing_code.lower() == fund_code.lower():
+                                        print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Duplicate found in existing funds - {fund_name} (Code: {fund_code})")
+                                        is_duplicate = True
+                                        break
+                                
+                                # Check in newly created assets in this session
+                                if not is_duplicate:
+                                    for created_asset in created_assets:
+                                        if created_asset.get("type") == "mutual_fund":
+                                            created_code = created_asset.get("mutual_fund_code", "")
+                                            if created_code and fund_code and created_code.lower() == fund_code.lower():
+                                                print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Duplicate found in newly created assets - {fund_name} (Code: {fund_code})")
+                                                is_duplicate = True
+                                                break
+                                
+                                if is_duplicate:
+                                    print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Skipping duplicate mutual fund - {fund_name} (Code: {fund_code})")
+                                    continue
+                                
+                                # Insert into database
+                                print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Inserting into database - {fund_name}")
+                                response = supabase_service.table("assets").insert(asset_dict).execute()
+                                if response.data and len(response.data) > 0:
+                                    print(f"DEBUG: Page {page_idx + 1}, MF {mf_idx + 1}: Successfully created - {fund_name}")
+                                    created_assets.append(response.data[0])
+                                    # Also add to existing_mutual_funds list to prevent duplicates in subsequent pages
+                                    existing_mutual_funds.append({
+                                        "mutual_fund_code": fund_code,
+                                        "name": fund_name,
+                                        "fund_house": fund_house
+                                    })
+                                else:
+                                    error_msg = f"Page {page_idx + 1}: Failed to create mutual fund: {fund_name}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    
+                            except Exception as e:
+                                import traceback
+                                print(f"Error processing mutual fund from page {page_idx + 1}: {e}")
+                                print(traceback.format_exc())
+                                errors.append(f"Page {page_idx + 1}: Error processing mutual fund: {str(e)}")
+                    
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
+                        print(f"LLM response was: {text_response}")
+                    except Exception as e:
+                        import traceback
+                        print(f"Error processing page {page_idx + 1}: {e}")
+                        print(traceback.format_exc())
+                        errors.append(f"Page {page_idx + 1}: {str(e)}")
+                
+                except Exception as e:
+                    import traceback
+                    print(f"Error calling LLM for page {page_idx + 1}: {e}")
+                    print(traceback.format_exc())
+                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+                
+                # Add 5-second delay after processing each page to prevent LLM overload
+                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
+                    print(f"DEBUG: Waiting 5 seconds before processing next page...")
+                    await asyncio.sleep(5)
         
         else:
             errors.append(f"Unsupported asset type: {asset_type}")
@@ -1655,6 +2151,8 @@ Return a JSON array of bank account objects. If there are multiple NEW bank acco
                 errors.append("No stocks found in the PDF")
             elif asset_type == "bank_account":
                 errors.append("No bank accounts found in the PDF")
+            elif asset_type == "mutual_fund":
+                errors.append("No mutual funds found in the PDF")
             else:
                 errors.append(f"No {asset_type} found in the PDF")
         
