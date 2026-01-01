@@ -998,27 +998,40 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
                     # Build instruction prompt using user's format
                     instruction_prompt = """Your task is to extract ONLY stocks/equities (shares of companies) from the document. DO NOT include mutual funds, bonds, or any other investment types. Only extract individual company stocks/equities.
 
+⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
+
+1. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+2. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+3. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. EVERY SINGLE STOCK MUST BE INCLUDED.
+
 Return the stocks/equities in a JSON format. Do not include any other text in your response. Only return the JSON.
 
 Each JSON object MUST have the following keys with EXACT names:
-1. "Stock/Equity Name" - REQUIRED - The name of the company/stock
-2. "Stock Symbol" - REQUIRED - The stock ticker symbol (e.g., "AAPL", "RELIANCE", "TCS"). If not available, use the stock name as symbol
-3. "Stock Price" - REQUIRED - The price per share (use current price or purchase price if available)
-4. "Quantity" - REQUIRED - The number of shares/quantity
-5. "Purchase Date" - REQUIRED - Purchase date in YYYY-MM-DD format. If not available in document, use "1900-01-01" as placeholder
-6. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
-7. "Current Value" - Optional - Current market value if available
-8. "Amount Invested" - Optional - Total amount invested if available
+1. "Stock/Equity Name" - REQUIRED - Extract the name EXACTLY as shown in the document
+2. "Stock Symbol" - REQUIRED - Extract the ticker symbol EXACTLY as shown (e.g., "AAPL", "RELIANCE", "TCS"). If not available, use the stock name as symbol
+3. "Average Price" - REQUIRED - Extract the average purchase price EXACTLY as shown in the document. Look for "Avg. Price", "Average Price", or "Purchase Price" labels. Extract the EXACT value - do not round, modify, or calculate.
+4. "Current Price" - REQUIRED - Extract the current market price EXACTLY as shown in the document. Look for "Price", "Current Price", or "Market Price" labels. Extract the EXACT value - do not round, modify, or calculate.
+5. "Quantity" - REQUIRED - Extract the quantity EXACTLY as shown in the document. Extract the EXACT value - do not round, modify, or calculate.
+6. "Purchase Date" - REQUIRED - Extract purchase date in YYYY-MM-DD format. If not available in document, use "1900-01-01" as placeholder
+7. "Value at Cost" - REQUIRED - Extract the total amount invested EXACTLY as shown in the document. Look for "Value at Cost", "Amount Invested", or "Total Invested" labels. Extract the EXACT value as it appears - DO NOT calculate it. DO NOT multiply Average Price * Quantity. The document already shows this value - copy it EXACTLY.
+8. "Current Value" - Optional - Extract current market value EXACTLY as shown in the document. Look for "Current Value", "Current Worth", or "Market Value" labels. Extract the EXACT value - do not round, modify, or calculate.
+9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
 
-CRITICAL REQUIREMENTS:
+MANDATORY REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
 1. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
-2. You MUST provide "Stock/Equity Name", "Stock Symbol", "Stock Price", and "Quantity" for EVERY stock. These are mandatory.
-3. For "Stock Symbol": Extract the ticker symbol if available (e.g., "RELIANCE", "TCS", "INFY"). If NOT available, use the stock name as the symbol.
-4. For "Purchase Date": If available in the document, extract it in YYYY-MM-DD format. If NOT available, use "1900-01-01" as a placeholder.
-5. Use the EXACT key names as specified above (e.g., "Stock/Equity Name", "Stock Symbol", "Stock Price", "Quantity", "Purchase Date").
-6. Extract ALL stocks from the page. Do not skip any stock that matches the criteria.
+2. You MUST provide "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", and "Value at Cost" for EVERY stock. These are mandatory fields.
+3. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,515.55", extract it as "1,515.55" (do not convert to 1515.55, keep commas if present). If the document shows "1515.55", extract it as "1515.55".
+4. For "Average Price": Find the value next to "Avg. Price", "Average Price", or "Purchase Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+5. For "Current Price": Find the value next to "Price", "Current Price", or "Market Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+6. For "Value at Cost": Find the value next to "Value at Cost", "Amount Invested", or "Total Invested" in the document and copy it EXACTLY as shown. DO NOT calculate it as Average Price * Quantity. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+7. For "Quantity": Find the quantity in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+8. For "Stock Symbol": Extract the ticker symbol EXACTLY as shown (e.g., "RELIANCE", "TCS", "INFY"). If NOT available, use the stock name as the symbol.
+9. For "Purchase Date": If available in the document, extract it and convert to YYYY-MM-DD format. If NOT available, use "1900-01-01" as a placeholder.
+10. Use the EXACT key names as specified above (e.g., "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", "Value at Cost", "Purchase Date").
+11. ⚠️ YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. Count all stocks carefully and ensure EVERY stock is included in your response. If there are 10 stocks on the page, your JSON array must contain exactly 10 objects.
+12. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
 
-Return a JSON array of stock objects. If there are multiple stocks on this page, return all of them in the array."""
+Return a JSON array of stock objects. If there are multiple stocks on this page, return ALL of them in the array. DO NOT skip any stock."""
                     
                     # Build conversation messages list as list of dictionaries (conversational format)
                     contents = []
@@ -1117,11 +1130,15 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                                 # Extract and validate fields (handle multiple possible key names)
                                 stock_name = stock_data.get("Stock/Equity Name") or stock_data.get("Stock Name") or stock_data.get("Equity Name") or stock_data.get("stock_name") or stock_data.get("name")
                                 stock_symbol = stock_data.get("Stock Symbol") or stock_data.get("stock_symbol") or stock_data.get("Symbol") or stock_data.get("symbol")
-                                stock_price = stock_data.get("Stock Price") or stock_data.get("Price") or stock_data.get("Purchase Price") or stock_data.get("stock_price") or stock_data.get("purchase_price")
+                                # Average Price = purchase price (the price at which shares were bought)
+                                average_price = stock_data.get("Average Price") or stock_data.get("Avg. Price") or stock_data.get("avg_price") or stock_data.get("Purchase Price") or stock_data.get("purchase_price")
+                                # Current Price = current market price
+                                current_price = stock_data.get("Current Price") or stock_data.get("Price") or stock_data.get("current_price") or stock_data.get("Market Price") or stock_data.get("market_price")
                                 quantity = stock_data.get("Quantity") or stock_data.get("Shares") or stock_data.get("Number of Shares") or stock_data.get("quantity")
                                 purchase_date_str = stock_data.get("Purchase Date") or stock_data.get("purchase_date")
+                                # Value at Cost = total amount invested (Average Price * Quantity)
+                                value_at_cost = stock_data.get("Value at Cost") or stock_data.get("value_at_cost") or stock_data.get("Amount Invested") or stock_data.get("Total Invested") or stock_data.get("Investment Amount") or stock_data.get("amount_invested")
                                 current_value = stock_data.get("Current Value") or stock_data.get("Current Worth") or stock_data.get("Market Value") or stock_data.get("current_value")
-                                amount_invested = stock_data.get("Amount Invested") or stock_data.get("Total Invested") or stock_data.get("Investment Amount") or stock_data.get("amount_invested")
                                 owner_name = stock_data.get("Owner Name") or stock_data.get("owner_name") or "self"
                                 
                                 # Use stock name as symbol if symbol is not provided
@@ -1133,11 +1150,11 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                                     print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Skipping mutual fund entry (has Scheme/NAV but no stock name)")
                                     continue
                                 
-                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Extracted fields - name={stock_name}, symbol={stock_symbol}, price={stock_price}, quantity={quantity}, purchase_date={purchase_date_str}")
+                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Extracted fields - name={stock_name}, symbol={stock_symbol}, avg_price={average_price}, current_price={current_price}, quantity={quantity}, value_at_cost={value_at_cost}, purchase_date={purchase_date_str}")
                                 
-                                # Validate required fields (name, symbol, price, quantity are mandatory; purchase_date can be defaulted)
-                                if not stock_name or not stock_symbol or not stock_price or not quantity:
-                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Missing required fields (name, symbol, price, or quantity). Data: {stock_data}"
+                                # Validate required fields (name, symbol, average_price, current_price, quantity, value_at_cost are mandatory; purchase_date can be defaulted)
+                                if not stock_name or not stock_symbol or not average_price or not current_price or not quantity or not value_at_cost:
+                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Missing required fields (name, symbol, average_price, current_price, quantity, or value_at_cost). Data: {stock_data}"
                                     print(f"DEBUG: {error_msg}")
                                     errors.append(error_msg)
                                     continue
@@ -1165,26 +1182,49 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                                     # Use default placeholder date
                                     purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
                                 
-                                # Convert to float
+                                # Helper function to clean numeric strings (remove commas, spaces)
+                                def clean_numeric_string(value):
+                                    if isinstance(value, str):
+                                        # Remove commas, spaces, and other non-numeric characters except decimal point
+                                        cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
+                                        return cleaned
+                                    return str(value)
+                                
+                                # Convert to float (clean numeric strings first to handle commas)
                                 try:
-                                    stock_price_float = float(stock_price)
-                                    quantity_float = float(quantity)
+                                    average_price_cleaned = clean_numeric_string(average_price)
+                                    current_price_cleaned = clean_numeric_string(current_price)
+                                    quantity_cleaned = clean_numeric_string(quantity)
+                                    value_at_cost_cleaned = clean_numeric_string(value_at_cost)
+                                    
+                                    average_price_float = float(average_price_cleaned)
+                                    current_price_float = float(current_price_cleaned)
+                                    quantity_float = float(quantity_cleaned)
+                                    value_at_cost_float = float(value_at_cost_cleaned)
                                 except (ValueError, TypeError) as e:
-                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Invalid numeric values - price: {stock_price}, quantity: {quantity}"
+                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Invalid numeric values - avg_price: {average_price}, current_price: {current_price}, quantity: {quantity}, value_at_cost: {value_at_cost}"
                                     print(f"DEBUG: {error_msg}")
                                     errors.append(error_msg)
                                     continue
                                 
-                                # Calculate current_value: use extracted value if available, otherwise use stock_price * quantity
+                                # Note: We use the extracted value_at_cost directly - no validation against calculation
+                                # The LLM should extract this value directly from the document, not calculate it
+                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Using extracted Value at Cost: {value_at_cost_float}")
+                                
+                                # Extract current_value directly from document (do not calculate)
                                 if current_value:
                                     try:
-                                        current_value_float = float(current_value)
+                                        current_value_cleaned = clean_numeric_string(current_value)
+                                        current_value_float = float(current_value_cleaned)
+                                        print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Using extracted Current Value: {current_value_float}")
                                     except (ValueError, TypeError):
-                                        # If current_value is invalid, calculate it
-                                        current_value_float = stock_price_float * quantity_float
+                                        # If current_value cannot be parsed, log error but don't calculate
+                                        print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Could not parse Current Value: {current_value}, setting to 0")
+                                        current_value_float = 0.0
                                 else:
-                                    # If not provided, use purchase price * quantity as current value
-                                    current_value_float = stock_price_float * quantity_float
+                                    # If not provided in document, set to 0 (do not calculate)
+                                    print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Current Value not found in document, setting to 0")
+                                    current_value_float = 0.0
                                 
                                 # Map owner name to family member ID
                                 family_member_id = None
@@ -1207,10 +1247,10 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                                     "currency": currency,
                                     "stock_symbol": stock_symbol,
                                     "quantity": quantity_float,
-                                    "purchase_price": stock_price_float,
+                                    "purchase_price": average_price_float,  # Use average purchase price
                                     "purchase_date": purchase_date.isoformat(),
-                                    "current_price": stock_price_float,  # Use purchase price as current price initially
-                                    "current_value": current_value_float,
+                                    "current_price": current_price_float,  # Use current market price
+                                    "current_value": current_value_float,  # Current market value
                                     "is_active": True,
                                     "family_member_id": family_member_id
                                 }
