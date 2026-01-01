@@ -1305,6 +1305,344 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                     print(traceback.format_exc())
                     errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
         
+        elif asset_type == "bank_account":
+            # Import LLM service for direct JSON calls
+            from google import genai
+            from google.genai import types
+            import asyncio
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
+            
+            client = genai.Client(api_key=api_key)
+            
+            # Fetch existing bank accounts to prevent duplicates
+            existing_bank_accounts = []
+            try:
+                existing_assets_response = supabase_service.table("assets").select("bank_name, account_number, account_type").eq("user_id", user_id).eq("type", "bank_account").eq("is_active", True).execute()
+                existing_bank_accounts = existing_assets_response.data if existing_assets_response.data else []
+                print(f"DEBUG: Found {len(existing_bank_accounts)} existing bank accounts")
+            except Exception as e:
+                print(f"Error fetching existing bank accounts: {e}")
+            
+            # Format existing bank accounts for the prompt
+            existing_accounts_text = ""
+            if existing_bank_accounts:
+                existing_accounts_list = []
+                for acc in existing_bank_accounts:
+                    bank_name = acc.get("bank_name", "Unknown")
+                    account_number = acc.get("account_number", "")
+                    account_type = acc.get("account_type", "")
+                    if account_number:
+                        existing_accounts_list.append(f"- Bank: {bank_name}, Account Number: {account_number}, Type: {account_type}")
+                    else:
+                        existing_accounts_list.append(f"- Bank: {bank_name}, Type: {account_type}")
+                existing_accounts_text = "\n".join(existing_accounts_list)
+            
+            # Process each page
+            print(f"DEBUG: Starting to process {len(pdf_pages)} pages from PDF for bank accounts")
+            
+            # Store context from previous pages (input and output pairs)
+            previous_contexts = []
+            
+            for page_idx, page_content in enumerate(pdf_pages):
+                print(f"DEBUG: Processing page {page_idx + 1} of {len(pdf_pages)} for bank accounts")
+                if not page_content or not page_content.strip():
+                    print(f"DEBUG: Page {page_idx + 1} is empty, skipping")
+                    continue
+                
+                print(f"DEBUG: Page {page_idx + 1} content length: {len(page_content)} characters")
+                try:
+                    # Build instruction prompt
+                    instruction_prompt = f"""Your task is to extract bank account information from the document. DO NOT include fixed deposits, mutual funds, stocks, or any other investment types. Only extract bank accounts (savings, checking, current accounts).
+
+⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
+
+1. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+2. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+3. ⚠️ DUPLICATE PREVENTION: Check the following list of ALREADY ADDED bank accounts. If a bank account from the document matches any of these (same bank name and account number, or same bank name if account number is not available), DO NOT include it in your response. Return an empty JSON array [] if all bank accounts on this page are already added.
+4. YOU MUST EXTRACT ALL NEW BANK ACCOUNTS FROM THE PAGE - DO NOT SKIP ANY NEW BANK ACCOUNT. However, skip any bank accounts that are duplicates of already added accounts.
+
+ALREADY ADDED BANK ACCOUNTS:
+{existing_accounts_text if existing_accounts_text else "No bank accounts have been added yet."}
+
+IMPORTANT: A bank account is considered a duplicate if:
+- The bank name matches AND the account number matches (if account number is available in both)
+- OR the bank name matches AND account type matches (if account number is not available in either)
+
+If you find a duplicate, skip it and do not include it in your response. Only return NEW bank accounts that are not in the list above.
+
+Return the bank accounts in a JSON format. Do not include any other text in your response. Only return the JSON.
+
+Each JSON object MUST have the following keys with EXACT names:
+
+REQUIRED FIELDS (must be present for every bank account):
+1. "Bank Name" - REQUIRED - Extract the name of the bank EXACTLY as shown in the document
+2. "Account Type" - REQUIRED - Extract the account type. Must be one of: "savings", "checking", or "current". Extract the value EXACTLY as shown or map to the closest match (e.g., "Savings Account" -> "savings", "Current Account" -> "current", "Checking Account" -> "checking")
+3. "Current Balance" - REQUIRED - Extract the current account balance EXACTLY as shown in the document. Look for "Balance", "Current Balance", "Available Balance", or "Account Balance" labels. Extract the EXACT value - do not round, modify, or calculate.
+4. "Account Number" - REQUIRED - Extract the account number EXACTLY as shown in the document. Can be masked or partial (e.g., "****1234" or "50100121888270"). ⚠️ CRITICAL: If you cannot find an account number in the document for a bank account, DO NOT include that bank account in your response. Only return bank accounts that have an account number clearly visible in the document.
+
+OPTIONAL FIELDS (include if available in the document):
+5. "Interest Rate" - Optional - Extract the annual interest rate percentage EXACTLY as shown in the document. Look for "Interest Rate", "Annual Interest Rate", or "Rate of Interest" labels. Extract the EXACT value - do not round, modify, or calculate.
+6. "Owner Name" - Optional - Primary account holder's name. If not provided, use "self"
+
+CRITICAL REQUIREMENTS:
+1. ONLY extract bank accounts (savings, checking, current accounts). DO NOT extract fixed deposits, mutual funds, stocks, or other investment types.
+2. You MUST provide "Bank Name", "Account Type", "Current Balance", and "Account Number" for EVERY bank account. These are mandatory fields. ⚠️ IF AN ACCOUNT NUMBER IS NOT AVAILABLE IN THE DOCUMENT, DO NOT INCLUDE THAT BANK ACCOUNT IN YOUR RESPONSE.
+3. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "10,000.50", extract it as "10,000.50" (preserve formatting as shown).
+4. For "Account Type": Extract or map to one of: "savings", "checking", or "current". Common mappings:
+   - "Savings Account", "SA", "Saving Account" -> "savings"
+   - "Current Account", "CA", "Current A/c" -> "current"
+   - "Checking Account", "Checking", "CHK" -> "checking"
+5. For "Current Balance": Find the value next to "Balance", "Current Balance", "Available Balance", or "Account Balance" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+6. For "Interest Rate": Extract the annual interest rate percentage EXACTLY as shown. DO NOT calculate or modify it.
+7. For "Account Number": Extract the account number EXACTLY as shown (can be masked, e.g., "****1234" or full number like "50100121888270"). ⚠️ THIS FIELD IS REQUIRED - if you cannot find an account number in the document, DO NOT include that bank account in your response.
+8. ⚠️ DUPLICATE CHECK: Before including any bank account in your response, check if it already exists in the "ALREADY ADDED BANK ACCOUNTS" list above. Compare by:
+   - Bank name (case-insensitive matching)
+   - Account number (if available in both the document and the existing list)
+   - Account type (if account number is not available)
+   - If a match is found, DO NOT include that bank account in your response.
+9. ⚠️ YOU MUST EXTRACT ALL NEW BANK ACCOUNTS FROM THE PAGE - DO NOT SKIP ANY NEW BANK ACCOUNT. However, skip any bank accounts that are duplicates of already added accounts.
+10. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
+
+Return a JSON array of bank account objects. If there are multiple NEW bank accounts on this page (not duplicates), return ALL of them in the array. If all bank accounts on this page are duplicates, return an empty array []. DO NOT skip any new bank account, but DO skip duplicates."""
+                    
+                    # Build conversation messages list as list of dictionaries (conversational format)
+                    contents = []
+                    
+                    # Add instruction as first user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": instruction_prompt}]
+                    })
+                    
+                    # Add previous context as conversation history (user-assistant pairs)
+                    if page_idx > 0 and previous_contexts:
+                        for prev_idx, (prev_input, prev_output) in enumerate(previous_contexts):
+                            # Add previous user message (page content)
+                            contents.append({
+                                "role": "user",
+                                "parts": [{"text": f"Here is a summary of all the bank accounts from page {prev_idx + 1}:\n\n{prev_input}"}]
+                            })
+                            # Add previous assistant response (LLM output)
+                            contents.append({
+                                "role": "model",
+                                "parts": [{"text": prev_output}]
+                            })
+                    
+                    # Add current page as user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"Here is a summary of all the bank accounts from page {page_idx + 1}:\n\n{page_content}"}]
+                    })
+                    
+                    # Call Gemini with JSON mode
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                    
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: client.models.generate_content(
+                            model="gemini-2.0-flash-exp",
+                            contents=contents,
+                            config=config,
+                        )
+                    )
+                    
+                    # Extract JSON response
+                    text_response = ""
+                    if hasattr(response, 'text') and response.text:
+                        text_response = response.text
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                            text_response = "".join(text_parts)
+                    
+                    if not text_response:
+                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                        continue
+                    
+                    # Parse JSON response
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = text_response.strip()
+                        if cleaned_response.startswith("```json"):
+                            cleaned_response = cleaned_response[7:]
+                        if cleaned_response.startswith("```"):
+                            cleaned_response = cleaned_response[3:]
+                        if cleaned_response.endswith("```"):
+                            cleaned_response = cleaned_response[:-3]
+                        cleaned_response = cleaned_response.strip()
+                        
+                        bank_accounts = json.loads(cleaned_response)
+                        # Handle both single object and array
+                        if not isinstance(bank_accounts, list):
+                            bank_accounts = [bank_accounts]
+                        
+                        print(f"DEBUG: Page {page_idx + 1}: LLM returned {len(bank_accounts)} bank account(s)")
+                        
+                        # Store input and output for future context (for pages after the first)
+                        previous_contexts.append((page_content, cleaned_response))
+                        print(f"DEBUG: Page {page_idx + 1}: Stored context for future pages (total contexts: {len(previous_contexts)})")
+                        
+                        # Skip if empty array (no bank accounts on this page)
+                        if len(bank_accounts) == 0:
+                            print(f"DEBUG: Page {page_idx + 1}: Empty array returned (no bank accounts on this page), continuing to next page")
+                            continue
+                        
+                        # Process each bank account
+                        for ba_idx, ba_data in enumerate(bank_accounts):
+                            print(f"DEBUG: Page {page_idx + 1}, Bank Account {ba_idx + 1}: Processing {ba_data}")
+                            try:
+                                # Get currency from market
+                                asset_market = market or "india"
+                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
+                                
+                                # Extract and validate fields (handle multiple possible key names)
+                                bank_name = ba_data.get("Bank Name") or ba_data.get("bank_name") or ba_data.get("Bank") or "Unknown Bank"
+                                account_type_str = ba_data.get("Account Type") or ba_data.get("account_type") or ba_data.get("Type") or ba_data.get("type")
+                                current_balance = ba_data.get("Current Balance") or ba_data.get("current_balance") or ba_data.get("Balance") or ba_data.get("balance") or ba_data.get("Available Balance") or ba_data.get("Account Balance")
+                                account_number = ba_data.get("Account Number") or ba_data.get("account_number") or ba_data.get("Account No") or ba_data.get("Account #")
+                                interest_rate = ba_data.get("Interest Rate") or ba_data.get("interest_rate") or ba_data.get("Annual Interest Rate") or ba_data.get("Rate of Interest")
+                                owner_name = ba_data.get("Owner Name") or ba_data.get("owner_name") or "self"
+                                
+                                print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Extracted fields - bank_name={bank_name}, account_type={account_type_str}, balance={current_balance}, account_number={account_number}, interest_rate={interest_rate}")
+                                
+                                # Validate required fields (account_number is now required)
+                                if not bank_name or not account_type_str or current_balance is None or not account_number:
+                                    error_msg = f"Page {page_idx + 1}, BA {ba_idx + 1}: Missing required fields (bank_name, account_type, current_balance, or account_number)"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Normalize account type (map to valid enum values)
+                                account_type_lower = account_type_str.lower().strip()
+                                if "savings" in account_type_lower or account_type_lower in ["sa", "sav"]:
+                                    account_type = "savings"
+                                elif "current" in account_type_lower or account_type_lower in ["ca", "cur"]:
+                                    account_type = "current"
+                                elif "checking" in account_type_lower or account_type_lower in ["chk", "check"]:
+                                    account_type = "checking"
+                                else:
+                                    # Default to savings if can't determine
+                                    account_type = "savings"
+                                    print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Could not determine account type from '{account_type_str}', defaulting to 'savings'")
+                                
+                                # Helper function to clean numeric strings (remove commas, spaces, currency symbols)
+                                def clean_numeric_string(value):
+                                    if isinstance(value, str):
+                                        # Remove commas, spaces, and other non-numeric characters except decimal point
+                                        cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
+                                        return cleaned
+                                    return str(value)
+                                
+                                # Convert balance to float (clean numeric strings first)
+                                try:
+                                    balance_cleaned = clean_numeric_string(current_balance)
+                                    balance_float = float(balance_cleaned)
+                                    print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Using extracted Current Balance: {balance_float}")
+                                except (ValueError, TypeError) as e:
+                                    error_msg = f"Page {page_idx + 1}, BA {ba_idx + 1}: Invalid balance value: {current_balance}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Convert interest_rate to float if provided (clean numeric strings first)
+                                interest_rate_float = None
+                                if interest_rate:
+                                    try:
+                                        interest_rate_cleaned = clean_numeric_string(interest_rate)
+                                        interest_rate_float = float(interest_rate_cleaned)
+                                        print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Using extracted Interest Rate: {interest_rate_float}")
+                                    except (ValueError, TypeError):
+                                        print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Could not parse Interest Rate: {interest_rate}, leaving as None")
+                                
+                                # Map owner name to family member ID
+                                family_member_id = None
+                                owner_name_lower = owner_name.lower().strip()
+                                if owner_name_lower in ["self", "me", "myself", ""]:
+                                    family_member_id = None
+                                elif owner_name_lower in family_members_map:
+                                    family_member_id = family_members_map[owner_name_lower]
+                                else:
+                                    # Try partial match
+                                    for fm_name, fm_id in family_members_map.items():
+                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                            family_member_id = fm_id
+                                            break
+                                
+                                # Build asset data
+                                asset_data = {
+                                    "name": bank_name,
+                                    "type": "bank_account",
+                                    "currency": currency,
+                                    "bank_name": bank_name,
+                                    "account_type": account_type,
+                                    "current_value": balance_float,  # Current balance
+                                    "is_active": True,
+                                    "family_member_id": family_member_id
+                                }
+                                
+                                # Add optional fields if provided
+                                if account_number:
+                                    asset_data["account_number"] = account_number
+                                if interest_rate_float is not None:
+                                    asset_data["interest_rate"] = interest_rate_float
+                                
+                                # Create AssetCreate object
+                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                                asset_create.model_validate_asset_fields()
+                                
+                                # Convert to dict
+                                try:
+                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                                except AttributeError:
+                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                                
+                                asset_dict["user_id"] = user_id
+                                
+                                # Convert decimals to strings
+                                decimal_fields = ['current_value', 'interest_rate']
+                                for field in decimal_fields:
+                                    if field in asset_dict and asset_dict[field] is not None:
+                                        asset_dict[field] = str(asset_dict[field])
+                                
+                                # Insert into database
+                                print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Inserting into database - {bank_name}")
+                                response = supabase_service.table("assets").insert(asset_dict).execute()
+                                if response.data and len(response.data) > 0:
+                                    print(f"DEBUG: Page {page_idx + 1}, BA {ba_idx + 1}: Successfully created - {bank_name}")
+                                    created_assets.append(response.data[0])
+                                else:
+                                    error_msg = f"Page {page_idx + 1}: Failed to create bank account: {bank_name}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    
+                            except Exception as e:
+                                import traceback
+                                print(f"Error processing bank account from page {page_idx + 1}: {e}")
+                                print(traceback.format_exc())
+                                errors.append(f"Page {page_idx + 1}: Error processing bank account: {str(e)}")
+                    
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
+                        print(f"LLM response was: {text_response}")
+                    except Exception as e:
+                        import traceback
+                        print(f"Error processing page {page_idx + 1}: {e}")
+                        print(traceback.format_exc())
+                        errors.append(f"Page {page_idx + 1}: {str(e)}")
+                
+                except Exception as e:
+                    import traceback
+                    print(f"Error calling LLM for page {page_idx + 1}: {e}")
+                    print(traceback.format_exc())
+                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+        
         else:
             errors.append(f"Unsupported asset type: {asset_type}")
         
@@ -1315,6 +1653,8 @@ Return a JSON array of stock objects. If there are multiple stocks on this page,
                 errors.append("No fixed deposits found in the PDF")
             elif asset_type == "stock":
                 errors.append("No stocks found in the PDF")
+            elif asset_type == "bank_account":
+                errors.append("No bank accounts found in the PDF")
             else:
                 errors.append(f"No {asset_type} found in the PDF")
         
