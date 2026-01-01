@@ -248,6 +248,7 @@ export default function AssetsPage() {
   
   const [isLoadingAssets, setIsLoadingAssets] = useState(true);
   const [isUploadingPdf, setIsUploadingPdf] = useState(false);
+  const [uploadingPdfAssetType, setUploadingPdfAssetType] = useState<string>("");
   
   // Stock-specific fields
   const [stockName, setStockName] = useState("");
@@ -654,6 +655,7 @@ export default function AssetsPage() {
   // Handle PDF upload for fixed deposits
   const handleFixedDepositPdfUpload = async (file: File) => {
     setIsUploadingPdf(true);
+    setUploadingPdfAssetType("fixed_deposit");
     try {
       const accessToken = localStorage.getItem("access_token");
       if (!accessToken) {
@@ -689,6 +691,49 @@ export default function AssetsPage() {
       alert("An error occurred while uploading the PDF. Please try again.");
     } finally {
       setIsUploadingPdf(false);
+      setUploadingPdfAssetType("");
+    }
+  };
+
+  const handleStockPdfUpload = async (file: File) => {
+    setIsUploadingPdf(true);
+    setUploadingPdfAssetType("stock");
+    try {
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) {
+        alert("Please log in to upload files");
+        setIsUploadingPdf(false);
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("asset_type", "stock");
+      formData.append("market", selectedMarket);
+
+      const response = await fetch("/api/assets/upload-pdf", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        alert(data.message || `Successfully added ${data.created_count} stock(s) from PDF`);
+        // Refresh assets to show the newly created stocks
+        await fetchAssets();
+      } else {
+        alert(data.message || "Failed to process PDF. Please try again.");
+      }
+    } catch (error) {
+      console.error("Error uploading PDF:", error);
+      alert("An error occurred while uploading the PDF. Please try again.");
+    } finally {
+      setIsUploadingPdf(false);
+      setUploadingPdfAssetType("");
     }
   };
 
@@ -1651,7 +1696,13 @@ export default function AssetsPage() {
           <div className="bg-white rounded-lg p-8 flex flex-col items-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mb-4"></div>
             <p className="text-gray-700 font-medium">Processing PDF...</p>
-            <p className="text-sm text-gray-500 mt-2">Extracting fixed deposit information</p>
+            <p className="text-sm text-gray-500 mt-2">
+              {uploadingPdfAssetType === "stock" 
+                ? "Extracting stock information" 
+                : uploadingPdfAssetType === "fixed_deposit"
+                ? "Extracting fixed deposit information"
+                : "Extracting asset information"}
+            </p>
           </div>
         </div>
       )}
@@ -1869,9 +1920,10 @@ export default function AssetsPage() {
                                 accept=".pdf"
                                 className="hidden"
                                 onChange={(e) => {
-                                  // Placeholder for future functionality
                                   if (e.target.files && e.target.files[0]) {
-                                    console.log("PDF selected for stocks:", e.target.files[0]);
+                                    handleStockPdfUpload(e.target.files[0]);
+                                    // Reset input so the same file can be selected again
+                                    e.target.value = '';
                                   }
                                 }}
                               />
@@ -1914,9 +1966,10 @@ export default function AssetsPage() {
                                   accept=".pdf"
                                   className="hidden"
                                   onChange={(e) => {
-                                    // Placeholder for future functionality
                                     if (e.target.files && e.target.files[0]) {
-                                      console.log("PDF selected for stocks:", e.target.files[0]);
+                                      handleStockPdfUpload(e.target.files[0]);
+                                      // Reset input so the same file can be selected again
+                                      e.target.value = '';
                                     }
                                   }}
                                 />
@@ -4599,6 +4652,7 @@ export default function AssetsPage() {
                             maturityAmount: maturityAmount,
                             startDate: startDate.toISOString().split('T')[0],
                             maturityDate: maturityDate.toISOString().split('T')[0],
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)
@@ -4701,6 +4755,7 @@ export default function AssetsPage() {
                             premium: premiumValue,
                             nominee: nominee || undefined,
                             premiumPaymentDate: premiumPaymentDate || undefined,
+                            familyMemberId: selectedFamilyMemberId,
                           };
                           
                           // Save to database (async, but don't wait)

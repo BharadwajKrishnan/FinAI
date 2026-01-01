@@ -667,7 +667,7 @@ async def upload_pdf_for_asset_type(
         created_assets = []
         errors = []
         
-        # Only process fixed deposits for now
+        # Process fixed deposits or stocks
         if asset_type == "fixed_deposit":
             # Import LLM service for direct JSON calls
             from google import genai
@@ -969,13 +969,314 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
                     print(traceback.format_exc())
                     errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
         
+        elif asset_type == "stock":
+            # Import LLM service for direct JSON calls
+            from google import genai
+            from google.genai import types
+            import asyncio
+            
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
+            
+            client = genai.Client(api_key=api_key)
+            
+            # Process each page
+            print(f"DEBUG: Starting to process {len(pdf_pages)} pages from PDF for stocks")
+            
+            # Store context from previous pages (input and output pairs)
+            previous_contexts = []
+            
+            for page_idx, page_content in enumerate(pdf_pages):
+                print(f"DEBUG: Processing page {page_idx + 1} of {len(pdf_pages)} for stocks")
+                if not page_content or not page_content.strip():
+                    print(f"DEBUG: Page {page_idx + 1} is empty, skipping")
+                    continue
+                
+                print(f"DEBUG: Page {page_idx + 1} content length: {len(page_content)} characters")
+                try:
+                    # Build instruction prompt using user's format
+                    instruction_prompt = """Your task is to extract ONLY stocks/equities (shares of companies) from the document. DO NOT include mutual funds, bonds, or any other investment types. Only extract individual company stocks/equities.
+
+Return the stocks/equities in a JSON format. Do not include any other text in your response. Only return the JSON.
+
+Each JSON object MUST have the following keys with EXACT names:
+1. "Stock/Equity Name" - REQUIRED - The name of the company/stock
+2. "Stock Symbol" - REQUIRED - The stock ticker symbol (e.g., "AAPL", "RELIANCE", "TCS"). If not available, use the stock name as symbol
+3. "Stock Price" - REQUIRED - The price per share (use current price or purchase price if available)
+4. "Quantity" - REQUIRED - The number of shares/quantity
+5. "Purchase Date" - REQUIRED - Purchase date in YYYY-MM-DD format. If not available in document, use "1900-01-01" as placeholder
+6. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
+7. "Current Value" - Optional - Current market value if available
+8. "Amount Invested" - Optional - Total amount invested if available
+
+CRITICAL REQUIREMENTS:
+1. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
+2. You MUST provide "Stock/Equity Name", "Stock Symbol", "Stock Price", and "Quantity" for EVERY stock. These are mandatory.
+3. For "Stock Symbol": Extract the ticker symbol if available (e.g., "RELIANCE", "TCS", "INFY"). If NOT available, use the stock name as the symbol.
+4. For "Purchase Date": If available in the document, extract it in YYYY-MM-DD format. If NOT available, use "1900-01-01" as a placeholder.
+5. Use the EXACT key names as specified above (e.g., "Stock/Equity Name", "Stock Symbol", "Stock Price", "Quantity", "Purchase Date").
+6. Extract ALL stocks from the page. Do not skip any stock that matches the criteria.
+
+Return a JSON array of stock objects. If there are multiple stocks on this page, return all of them in the array."""
+                    
+                    # Build conversation messages list as list of dictionaries (conversational format)
+                    contents = []
+                    
+                    # Add instruction as first user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": instruction_prompt}]
+                    })
+                    
+                    # Add previous context as conversation history (user-assistant pairs)
+                    if page_idx > 0 and previous_contexts:
+                        for prev_idx, (prev_input, prev_output) in enumerate(previous_contexts):
+                            # Add previous user message (page content)
+                            contents.append({
+                                "role": "user",
+                                "parts": [{"text": f"Here is a summary of all the stock/equity from page {prev_idx + 1}:\n\n{prev_input}"}]
+                            })
+                            # Add previous assistant response (LLM output)
+                            contents.append({
+                                "role": "model",
+                                "parts": [{"text": prev_output}]
+                            })
+                    
+                    # Add current page as user message
+                    contents.append({
+                        "role": "user",
+                        "parts": [{"text": f"Here is a summary of all the stock/equity from page {page_idx + 1}:\n\n{page_content}"}]
+                    })
+                    
+                    # Call Gemini with JSON mode
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                    
+                    loop = asyncio.get_event_loop()
+                    response = await loop.run_in_executor(
+                        None,
+                        lambda: client.models.generate_content(
+                            model="gemini-2.0-flash-exp",
+                            contents=contents,
+                            config=config,
+                        )
+                    )
+                    
+                    # Extract JSON response
+                    text_response = ""
+                    if hasattr(response, 'text') and response.text:
+                        text_response = response.text
+                    elif hasattr(response, 'candidates') and response.candidates:
+                        candidate = response.candidates[0]
+                        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text') and part.text]
+                            text_response = "".join(text_parts)
+                    
+                    if not text_response:
+                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                        continue
+                    
+                    # Parse JSON response
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = text_response.strip()
+                        if cleaned_response.startswith("```json"):
+                            cleaned_response = cleaned_response[7:]
+                        if cleaned_response.startswith("```"):
+                            cleaned_response = cleaned_response[3:]
+                        if cleaned_response.endswith("```"):
+                            cleaned_response = cleaned_response[:-3]
+                        cleaned_response = cleaned_response.strip()
+                        
+                        stocks = json.loads(cleaned_response)
+                        # Handle both single object and array
+                        if not isinstance(stocks, list):
+                            stocks = [stocks]
+                        
+                        print(f"DEBUG: Page {page_idx + 1}: LLM returned {len(stocks)} stock(s)")
+                        
+                        # Store input and output for future context (for pages after the first)
+                        previous_contexts.append((page_content, cleaned_response))
+                        print(f"DEBUG: Page {page_idx + 1}: Stored context for future pages (total contexts: {len(previous_contexts)})")
+                        
+                        # Skip if empty array (no stocks on this page)
+                        if len(stocks) == 0:
+                            print(f"DEBUG: Page {page_idx + 1}: Empty array returned (no stocks on this page), continuing to next page")
+                            continue
+                        
+                        # Process each stock
+                        for stock_idx, stock_data in enumerate(stocks):
+                            print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Processing {stock_data}")
+                            try:
+                                # Get currency from market
+                                asset_market = market or "india"
+                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
+                                
+                                # Extract and validate fields (handle multiple possible key names)
+                                stock_name = stock_data.get("Stock/Equity Name") or stock_data.get("Stock Name") or stock_data.get("Equity Name") or stock_data.get("stock_name") or stock_data.get("name")
+                                stock_symbol = stock_data.get("Stock Symbol") or stock_data.get("stock_symbol") or stock_data.get("Symbol") or stock_data.get("symbol")
+                                stock_price = stock_data.get("Stock Price") or stock_data.get("Price") or stock_data.get("Purchase Price") or stock_data.get("stock_price") or stock_data.get("purchase_price")
+                                quantity = stock_data.get("Quantity") or stock_data.get("Shares") or stock_data.get("Number of Shares") or stock_data.get("quantity")
+                                purchase_date_str = stock_data.get("Purchase Date") or stock_data.get("purchase_date")
+                                current_value = stock_data.get("Current Value") or stock_data.get("Current Worth") or stock_data.get("Market Value") or stock_data.get("current_value")
+                                amount_invested = stock_data.get("Amount Invested") or stock_data.get("Total Invested") or stock_data.get("Investment Amount") or stock_data.get("amount_invested")
+                                owner_name = stock_data.get("Owner Name") or stock_data.get("owner_name") or "self"
+                                
+                                # Use stock name as symbol if symbol is not provided
+                                if not stock_symbol and stock_name:
+                                    stock_symbol = stock_name
+                                
+                                # Skip if this looks like a mutual fund (has "Scheme" or "NAV" or "Units" but no stock-like fields)
+                                if (stock_data.get("Scheme") or stock_data.get("NAV") or stock_data.get("nav")) and not stock_name:
+                                    print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Skipping mutual fund entry (has Scheme/NAV but no stock name)")
+                                    continue
+                                
+                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Extracted fields - name={stock_name}, symbol={stock_symbol}, price={stock_price}, quantity={quantity}, purchase_date={purchase_date_str}")
+                                
+                                # Validate required fields (name, symbol, price, quantity are mandatory; purchase_date can be defaulted)
+                                if not stock_name or not stock_symbol or not stock_price or not quantity:
+                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Missing required fields (name, symbol, price, or quantity). Data: {stock_data}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Use default date if purchase_date is not provided
+                                if not purchase_date_str or purchase_date_str == "1900-01-01":
+                                    purchase_date_str = "1900-01-01"  # Default placeholder date
+                                    print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Purchase date not provided, using default placeholder")
+                                
+                                # Parse purchase date (handle default placeholder)
+                                purchase_date = None
+                                if purchase_date_str and purchase_date_str != "1900-01-01":
+                                    try:
+                                        purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
+                                    except:
+                                        try:
+                                            purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
+                                        except:
+                                            try:
+                                                purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
+                                            except:
+                                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Invalid purchase date format: {purchase_date_str}, using default")
+                                                purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
+                                else:
+                                    # Use default placeholder date
+                                    purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
+                                
+                                # Convert to float
+                                try:
+                                    stock_price_float = float(stock_price)
+                                    quantity_float = float(quantity)
+                                except (ValueError, TypeError) as e:
+                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Invalid numeric values - price: {stock_price}, quantity: {quantity}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    continue
+                                
+                                # Calculate current_value: use extracted value if available, otherwise use stock_price * quantity
+                                if current_value:
+                                    try:
+                                        current_value_float = float(current_value)
+                                    except (ValueError, TypeError):
+                                        # If current_value is invalid, calculate it
+                                        current_value_float = stock_price_float * quantity_float
+                                else:
+                                    # If not provided, use purchase price * quantity as current value
+                                    current_value_float = stock_price_float * quantity_float
+                                
+                                # Map owner name to family member ID
+                                family_member_id = None
+                                owner_name_lower = owner_name.lower().strip()
+                                if owner_name_lower in ["self", "me", "myself", ""]:
+                                    family_member_id = None
+                                elif owner_name_lower in family_members_map:
+                                    family_member_id = family_members_map[owner_name_lower]
+                                else:
+                                    # Try partial match
+                                    for fm_name, fm_id in family_members_map.items():
+                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                            family_member_id = fm_id
+                                            break
+                                
+                                # Build asset data
+                                asset_data = {
+                                    "name": stock_name,
+                                    "type": "stock",
+                                    "currency": currency,
+                                    "stock_symbol": stock_symbol,
+                                    "quantity": quantity_float,
+                                    "purchase_price": stock_price_float,
+                                    "purchase_date": purchase_date.isoformat(),
+                                    "current_price": stock_price_float,  # Use purchase price as current price initially
+                                    "current_value": current_value_float,
+                                    "is_active": True,
+                                    "family_member_id": family_member_id
+                                }
+                                
+                                # Create AssetCreate object
+                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                                asset_create.model_validate_asset_fields()
+                                
+                                # Convert to dict
+                                try:
+                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                                except AttributeError:
+                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                                
+                                asset_dict["user_id"] = user_id
+                                
+                                # Convert decimals to strings
+                                decimal_fields = ['quantity', 'purchase_price', 'current_price', 'current_value']
+                                for field in decimal_fields:
+                                    if field in asset_dict and asset_dict[field] is not None:
+                                        asset_dict[field] = str(asset_dict[field])
+                                
+                                # Insert into database
+                                print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Inserting into database - {stock_name}")
+                                response = supabase_service.table("assets").insert(asset_dict).execute()
+                                if response.data and len(response.data) > 0:
+                                    print(f"DEBUG: Page {page_idx + 1}, Stock {stock_idx + 1}: Successfully created - {stock_name}")
+                                    created_assets.append(response.data[0])
+                                else:
+                                    error_msg = f"Page {page_idx + 1}: Failed to create stock: {stock_name}"
+                                    print(f"DEBUG: {error_msg}")
+                                    errors.append(error_msg)
+                                    
+                            except Exception as e:
+                                import traceback
+                                print(f"Error processing stock from page {page_idx + 1}: {e}")
+                                print(traceback.format_exc())
+                                errors.append(f"Page {page_idx + 1}: Error processing stock: {str(e)}")
+                    
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
+                        print(f"LLM response was: {text_response}")
+                    except Exception as e:
+                        import traceback
+                        print(f"Error processing page {page_idx + 1}: {e}")
+                        print(traceback.format_exc())
+                        errors.append(f"Page {page_idx + 1}: {str(e)}")
+                
+                except Exception as e:
+                    import traceback
+                    print(f"Error calling LLM for page {page_idx + 1}: {e}")
+                    print(traceback.format_exc())
+                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
+        
         else:
             errors.append(f"Unsupported asset type: {asset_type}")
         
         print(f"DEBUG: Finished processing all pages. Created {len(created_assets)} assets, {len(errors)} errors")
         
         if not created_assets and not errors:
-            errors.append("No fixed deposits found in the PDF")
+            if asset_type == "fixed_deposit":
+                errors.append("No fixed deposits found in the PDF")
+            elif asset_type == "stock":
+                errors.append("No stocks found in the PDF")
+            else:
+                errors.append(f"No {asset_type} found in the PDF")
         
         return {
             "success": len(created_assets) > 0,
