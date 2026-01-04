@@ -1004,11 +1004,11 @@ Return a JSON array of fixed deposit objects. If there are multiple fixed deposi
                 print(f"DEBUG: Page {page_idx + 1} content length: {len(page_content)} characters")
                 try:
                     # Build instruction prompt using user's format
-                    instruction_prompt = """Your task is to extract ONLY stocks/equities (shares of companies) from the document. DO NOT include mutual funds, bonds, or any other investment types. Only extract individual company stocks/equities.
+                    instruction_prompt = f"""Your task is to extract ONLY stocks/equities (shares of companies) from the document. DO NOT include mutual funds, bonds, or any other investment types. Only extract individual company stocks/equities.
 
-⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
+CRITICAL RULES - READ CAREFULLY
 
-1. ⚠️ SECTION RESTRICTION: ONLY search for and extract stocks/equities from sections of the document that are specifically labeled as "Stocks", "Equities", "Stock Holdings", "Equity Portfolio", "Share Holdings", or similar stock/equity sections. DO NOT extract information from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+1. SECTION RESTRICTION: ONLY search for and extract stocks/equities from sections of the document that are specifically labeled as "Stocks", "Equities", "Stock Holdings", "Equity Portfolio", "Share Holdings", or similar stock/equity sections. DO NOT extract information from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
 2. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
 3. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
 4. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. EVERY SINGLE STOCK MUST BE INCLUDED.
@@ -1027,10 +1027,10 @@ Each JSON object MUST have the following keys with EXACT names:
 9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
 
 MANDATORY REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
-1. ⚠️ ONLY extract stocks/equities from stock/equity sections. DO NOT extract from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+1. ONLY extract stocks/equities from stock/equity sections. DO NOT extract from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
 2. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
 3. You MUST provide "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", and "Value at Cost" for EVERY stock. These are mandatory fields.
-3. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,515.55", extract it as "1,515.55" (do not convert to 1515.55, keep commas if present). If the document shows "1515.55", extract it as "1515.55".
+3. ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,515.55", extract it as "1,515.55" (do not convert to 1515.55, keep commas if present). If the document shows "1515.55", extract it as "1515.55".
 4. For "Average Price": Find the value next to "Avg. Price", "Average Price", or "Purchase Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
 5. For "Current Price": Find the value next to "Price", "Current Price", or "Market Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
 6. For "Value at Cost": Find the value next to "Value at Cost", "Amount Invested", or "Total Invested" in the document and copy it EXACTLY as shown. DO NOT calculate it as Average Price * Quantity. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
@@ -1038,7 +1038,7 @@ MANDATORY REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
 8. For "Stock Symbol": Extract the ticker symbol EXACTLY as shown (e.g., "RELIANCE", "TCS", "INFY"). If NOT available, use the stock name as the symbol.
 9. For "Purchase Date": If available in the document, extract it and convert to YYYY-MM-DD format. If NOT available, use "1900-01-01" as a placeholder.
 10. Use the EXACT key names as specified above (e.g., "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", "Value at Cost", "Purchase Date").
-11. ⚠️ YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. Count all stocks carefully and ensure EVERY stock is included in your response. If there are 10 stocks on the page, your JSON array must contain exactly 10 objects.
+11. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. Count all stocks carefully and ensure EVERY stock is included in your response. If there are 10 stocks on the page, your JSON array must contain exactly 10 objects.
 12. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
 
 Return a JSON array of stock objects. If there are multiple stocks on this page, return ALL of them in the array. DO NOT skip any stock."""
@@ -1770,15 +1770,14 @@ Return a JSON array of bank account objects. If there are multiple NEW bank acco
                     # Build instruction prompt
                     instruction_prompt = f"""Your task is to extract mutual fund information from the document. DO NOT include stocks, bank accounts, fixed deposits, or any other investment types. Only extract mutual funds.
 
-⚠️⚠️⚠️ CRITICAL RULES - READ CAREFULLY ⚠️⚠️⚠️
+CRITICAL RULES - READ CAREFULLY
 
-1. ⚠️ HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
-2. ⚠️ SECTION RESTRICTION: ONLY search for and extract mutual funds from sections of the document that are specifically labeled as "Mutual Funds", "Mutual Fund Holdings", "MF Portfolio", "Scheme Holdings", or similar mutual fund sections. DO NOT extract information from stock sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a mutual fund section, return an empty JSON array [].
-3. ⚠️ SIP-BASED MUTUAL FUNDS: Note that mutual funds can be SIP-based (Systematic Investment Plan) or lump-sum investments. Both types should be extracted. SIP-based mutual funds are still mutual funds and should be included.
-4. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
-5. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
-6. ⚠️ DUPLICATE PREVENTION: Check the following list of ALREADY ADDED mutual funds. If a mutual fund from the document matches any of these (same fund code, or same fund name and fund house if code is not available), DO NOT include it in your response. Return an empty JSON array [] if all mutual funds on this page are already added.
-7. YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
+1. HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
+2. SIP-BASED MUTUAL FUNDS: Note that mutual funds can be SIP-based (Systematic Investment Plan) or lump-sum investments. Both types should be extracted. SIP-based mutual funds are still mutual funds and should be included.
+3. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+4. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+5. DUPLICATE PREVENTION: Check the following list of ALREADY ADDED mutual funds. If a mutual fund from the document matches any of these (same fund code, or same fund name and fund house if code is not available), DO NOT include it in your response. Return an empty JSON array [] if all mutual funds on this page are already added.
+6. YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
 
 ALREADY ADDED MUTUAL FUNDS:
 {existing_funds_text if existing_funds_text else "No mutual funds have been added yet."}
@@ -1795,10 +1794,8 @@ Each JSON object MUST have the following keys with EXACT names:
 
 REQUIRED FIELDS (must be present for every mutual fund):
 1. "Fund Name" - REQUIRED - Extract the name of the mutual fund EXACTLY as shown in the document
-2. "Fund Code" - REQUIRED - Extract the mutual fund code/identifier EXACTLY as shown in the document. Look for "Fund Code", "Scheme Code", "ISIN", or "Code" labels. ⚠️ CRITICAL: If you cannot find a fund code in the document for a mutual fund, DO NOT include that mutual fund in your response. Only return mutual funds that have a fund code clearly visible in the document.
+2. "Fund Code" - REQUIRED - Extract the mutual fund code/identifier EXACTLY as shown in the document. Look for "Fund Code", "Scheme Code", "ISIN", or "Code" labels. CRITICAL: If you cannot find a fund code in the document for a mutual fund, DO NOT include that mutual fund in your response. Only return mutual funds that have a fund code clearly visible in the document.
 3. "Units" - REQUIRED - Extract the number of units held EXACTLY as shown in the document. Look for "Units", "No. of Units", or "Quantity" labels. Extract the EXACT value - do not round, modify, or calculate.
-
-OPTIONAL FIELDS (include if available in the document):
 4. "Fund House" - Optional - Extract the fund house/AMC (Asset Management Company) name EXACTLY as shown in the document. Look for "Fund House", "AMC", "Asset Management Company", or "Scheme Name" labels.
 5. "NAV" - Optional - Extract the Net Asset Value per unit EXACTLY as shown in the document. Look for "NAV", "Net Asset Value", or "Current NAV" labels. Extract the EXACT value - do not round, modify, or calculate.
 6. "Purchase Date" - Optional - Extract the purchase date in YYYY-MM-DD format. Look for "Purchase Date", "Date of Investment", or "Investment Date" labels. If not available, leave as null.
@@ -1807,23 +1804,22 @@ OPTIONAL FIELDS (include if available in the document):
 9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
 
 CRITICAL REQUIREMENTS:
-1. ⚠️ HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
-2. ⚠️ ONLY extract mutual funds from mutual fund sections. DO NOT extract from stock sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a mutual fund section, return an empty JSON array [].
-3. ⚠️ SIP-based mutual funds are still mutual funds and should be extracted. Look for mutual funds regardless of whether they are SIP-based or lump-sum investments.
-4. You MUST provide "Fund Name", "Fund Code", and "Units" for EVERY mutual fund. These are mandatory fields. ⚠️ IF A FUND CODE IS NOT AVAILABLE IN THE DOCUMENT, DO NOT INCLUDE THAT MUTUAL FUND IN YOUR RESPONSE.
-5. ⚠️ ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,234.56", extract it as "1,234.56" (preserve formatting as shown).
-6. For "Fund Code": Extract the fund code EXACTLY as shown. Look for labels like "Fund Code", "Scheme Code", "ISIN", or "Code". ⚠️ THIS FIELD IS REQUIRED - if you cannot find a fund code in the document, DO NOT include that mutual fund in your response.
-7. For "Units": Find the number of units in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
-8. For "NAV": Extract the NAV per unit EXACTLY as shown. This is a key identifier for mutual funds - if NAV is present, the investment is a mutual fund. DO NOT calculate or modify it.
-9. For "Value at Cost": Extract the total amount invested (value at cost) EXACTLY as shown. Look for "Value at Cost", "Amount Invested", "Total Invested", or "Investment Amount" labels. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
-10. For "Current Value": Extract the current market value EXACTLY as shown. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
-11. ⚠️ REMEMBER: If an investment has a NAV (Net Asset Value) property, it is a mutual fund. Use NAV as the key identifier to distinguish mutual funds from stocks, bank accounts, fixed deposits, or other investment types.
-12. ⚠️ DUPLICATE CHECK: Before including any mutual fund in your response, check if it already exists in the "ALREADY ADDED MUTUAL FUNDS" list above. Compare by:
+1. HOW TO IDENTIFY A MUTUAL FUND: A mutual fund can be identified by the presence of a NAV (Net Asset Value) property or field. If an investment/asset has a NAV value, it is a mutual fund. Look for labels like "NAV", "Net Asset Value", "Current NAV", or "NAV per Unit" in the document. If you see NAV mentioned for an investment, treat it as a mutual fund and extract it.
+2. SIP-based mutual funds are still mutual funds and should be extracted. Look for mutual funds regardless of whether they are SIP-based or lump-sum investments.
+3. You MUST provide "Fund Name", "Fund Code", and "Units" for EVERY mutual fund. These are mandatory fields. IF A FUND CODE IS NOT AVAILABLE IN THE DOCUMENT, DO NOT INCLUDE THAT MUTUAL FUND IN YOUR RESPONSE.
+4. ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,234.56", extract it as "1,234.56" (preserve formatting as shown).
+5. For "Fund Code": Extract the fund code EXACTLY as shown. Look for labels like "Fund Code", "Scheme Code", "ISIN", or "Code". THIS FIELD IS REQUIRED - if you cannot find a fund code in the document, DO NOT include that mutual fund in your response.
+6. For "Units": Find the number of units in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+7. For "NAV": Extract the NAV per unit EXACTLY as shown. This is a key identifier for mutual funds - if NAV is present, the investment is a mutual fund. DO NOT calculate or modify it.
+8. For "Value at Cost": Extract the total amount invested (value at cost) EXACTLY as shown. Look for "Value at Cost", "Amount Invested", "Total Invested", or "Investment Amount" labels. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+9. For "Current Value": Extract the current market value EXACTLY as shown. DO NOT calculate it as Units * NAV. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+10. REMEMBER: If an investment has a NAV (Net Asset Value) property, it is a mutual fund. Use NAV as the key identifier to distinguish mutual funds from stocks, bank accounts, fixed deposits, or other investment types.
+11. DUPLICATE CHECK: Before including any mutual fund in your response, check if it already exists in the "ALREADY ADDED MUTUAL FUNDS" list above. Compare by:
    - Fund code (if available in both)
    - OR fund name and fund house (if fund code is not available)
    - If a match is found, DO NOT include that mutual fund in your response.
-13. ⚠️ YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
-10. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
+12. YOU MUST EXTRACT ALL NEW MUTUAL FUNDS FROM THE PAGE - DO NOT SKIP ANY NEW MUTUAL FUND. However, skip any mutual funds that are duplicates of already added funds.
+13. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
 
 Return a JSON array of mutual fund objects. If there are multiple NEW mutual funds on this page (not duplicates), return ALL of them in the array. If all mutual funds on this page are duplicates, return an empty array []. DO NOT skip any new mutual fund, but DO skip duplicates."""
                     
