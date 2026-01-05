@@ -215,8 +215,8 @@ class AssetCreate(AssetBase):
                 raise ValueError("mutual_fund_code and units are required for mutual fund assets")
         
         elif self.type == AssetType.BANK_ACCOUNT:
-            if not self.bank_name or not self.account_type:
-                raise ValueError("bank_name and account_type are required for bank account assets")
+            if not self.bank_name:
+                raise ValueError("bank_name is required for bank account assets")
         
         elif self.type == AssetType.FIXED_DEPOSIT:
             if not self.principal_amount or not self.fd_interest_rate or not self.maturity_date or not self.start_date:

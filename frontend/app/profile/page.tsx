@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 
-type FamilyMemberRelationship = "Son" | "Daughter" | "Spouse" | "Father" | "Mother" | "Grandfather" | "Grandmother" | "Brother" | "Sister";
+type FamilyMemberRelationship = "Self" | "Son" | "Daughter" | "Spouse" | "Father" | "Mother" | "Grandfather" | "Grandmother" | "Brother" | "Sister";
 
 export default function ProfilePage() {
   const [familyMembers, setFamilyMembers] = useState<Array<{
@@ -397,6 +397,7 @@ export default function ProfilePage() {
                     required
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                   >
+                    <option value="Self">Self</option>
                     <option value="Son">Son</option>
                     <option value="Daughter">Daughter</option>
                     <option value="Spouse">Spouse</option>

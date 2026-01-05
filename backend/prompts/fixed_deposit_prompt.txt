@@ -1,0 +1,27 @@
+Your task is to return the fixed deposits in a JSON format.
+
+Do not include any other text in your response. Only return the JSON.
+
+Each JSON object should have the following keys:
+
+REQUIRED FIELDS (must be present for every fixed deposit):
+1. bank_name (Account Number / Bank Account Number) - REQUIRED - This will be used as the asset name
+2. principal_amount (Amount Invested / Principal Amount) - REQUIRED
+3. fd_interest_rate (Rate of Interest / Interest Rate) - REQUIRED
+4. start_date (Start Date in YYYY-MM-DD format) - REQUIRED
+5. maturity_date (Maturity Date in YYYY-MM-DD format) - REQUIRED - Must be extracted directly from the document, do not calculate it
+
+OPTIONAL FIELDS (include if available in the document):
+6. maturity_amount (Total Amount at Maturity / Amount at Maturity / Maturity Value / Final Amount) - Optional - Extract this value ONLY if it is explicitly shown in the document with labels like "Total Amount at Maturity", "Maturity Amount", "Amount at Maturity", "Maturity Value", or "Final Amount". DO NOT calculate it. If the document does not explicitly show this value, leave it as null.
+7. duration_months (Duration in months) - Optional - Extract this from the document if available. Do not calculate it.
+8. owner_name (Owner Name - only the primary holder's name) - Optional - If not provided, use "self"
+
+CRITICAL REQUIREMENTS:
+1. You MUST provide all 5 REQUIRED fields (bank_name, principal_amount, fd_interest_rate, start_date, maturity_date) for EVERY fixed deposit. Do not skip any fixed deposit if these fields are present.
+2. If a required field is missing from the document, you can leave it as null, but try your best to extract all required fields.
+3. Make sure that you have extracted ALL fixed deposits from the page. Do not skip any fixed deposit.
+4. For maturity_amount: ONLY extract it if you see it explicitly written in the document with one of the labels mentioned above. DO NOT calculate it using principal_amount, interest rate, or duration. If it's not explicitly shown, set it to null.
+5. For optional fields, only include them if they are clearly present in the document.
+
+Return a JSON array of fixed deposit objects. If there are multiple fixed deposits on this page, return all of them in the array.
+

@@ -1,0 +1,39 @@
+Your task is to extract ONLY stocks/equities (shares of companies) from the document. DO NOT include mutual funds, bonds, or any other investment types. Only extract individual company stocks/equities.
+
+CRITICAL RULES - READ CAREFULLY
+
+1. SECTION RESTRICTION: ONLY search for and extract stocks/equities from sections of the document that are specifically labeled as "Stocks", "Equities", "Stock Holdings", "Equity Portfolio", "Share Holdings", or similar stock/equity sections. DO NOT extract information from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+2. DO NOT PERFORM ANY CALCULATIONS WHATSOEVER. ONLY EXTRACT VALUES EXACTLY AS THEY APPEAR IN THE DOCUMENT.
+3. ALL VALUES MUST BE EXACTLY AS SHOWN IN THE PDF - NO ROUNDING, NO MODIFICATIONS, NO CALCULATIONS.
+4. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. EVERY SINGLE STOCK MUST BE INCLUDED.
+
+Return the stocks/equities in a JSON format. Do not include any other text in your response. Only return the JSON.
+
+Each JSON object MUST have the following keys with EXACT names:
+1. "Stock/Equity Name" - REQUIRED - Extract the name EXACTLY as shown in the document
+2. "Stock Symbol" - REQUIRED - Extract the ticker symbol EXACTLY as shown (e.g., "AAPL", "RELIANCE", "TCS"). If not available, use the stock name as symbol
+3. "Average Price" - REQUIRED - Extract the average purchase price EXACTLY as shown in the document. Look for "Avg. Price", "Average Price", or "Purchase Price" labels. Extract the EXACT value - do not round, modify, or calculate.
+4. "Current Price" - REQUIRED - Extract the current market price EXACTLY as shown in the document. Look for "Price", "Current Price", or "Market Price" labels. Extract the EXACT value - do not round, modify, or calculate.
+5. "Quantity" - REQUIRED - Extract the quantity EXACTLY as shown in the document. Extract the EXACT value - do not round, modify, or calculate.
+6. "Purchase Date" - REQUIRED - Extract purchase date in YYYY-MM-DD format. If not available in document, use "1900-01-01" as placeholder
+7. "Value at Cost" - REQUIRED - Extract the total amount invested EXACTLY as shown in the document. Look for "Value at Cost", "Amount Invested", or "Total Invested" labels. Extract the EXACT value as it appears - DO NOT calculate it. DO NOT multiply Average Price * Quantity. The document already shows this value - copy it EXACTLY.
+8. "Current Value" - Optional - Extract current market value EXACTLY as shown in the document. Look for "Current Value", "Current Worth", or "Market Value" labels. Extract the EXACT value - do not round, modify, or calculate.
+9. "Owner Name" - Optional - Primary holder's name. If not provided, use "self"
+
+MANDATORY REQUIREMENTS - YOU MUST FOLLOW THESE EXACTLY:
+1. ONLY extract stocks/equities from stock/equity sections. DO NOT extract from mutual fund sections, bank account sections, fixed deposit sections, or any other sections. If the page does not contain a stock/equity section, return an empty JSON array [].
+2. ONLY extract stocks/equities (individual company shares). DO NOT extract mutual funds, bonds, ETFs, or other investment types.
+3. You MUST provide "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", and "Value at Cost" for EVERY stock. These are mandatory fields.
+3. ABSOLUTELY NO CALCULATIONS ALLOWED - Extract all numeric values EXACTLY as they appear in the document. If the document shows "1,515.55", extract it as "1,515.55" (do not convert to 1515.55, keep commas if present). If the document shows "1515.55", extract it as "1515.55".
+4. For "Average Price": Find the value next to "Avg. Price", "Average Price", or "Purchase Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+5. For "Current Price": Find the value next to "Price", "Current Price", or "Market Price" in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+6. For "Value at Cost": Find the value next to "Value at Cost", "Amount Invested", or "Total Invested" in the document and copy it EXACTLY as shown. DO NOT calculate it as Average Price * Quantity. DO NOT perform any multiplication. The document already contains this value - extract it EXACTLY as it appears.
+7. For "Quantity": Find the quantity in the document and copy it EXACTLY as shown. DO NOT calculate, round, or modify it.
+8. For "Stock Symbol": Extract the ticker symbol EXACTLY as shown (e.g., "RELIANCE", "TCS", "INFY"). If NOT available, use the stock name as the symbol.
+9. For "Purchase Date": If available in the document, extract it and convert to YYYY-MM-DD format. If NOT available, use "1900-01-01" as a placeholder.
+10. Use the EXACT key names as specified above (e.g., "Stock/Equity Name", "Stock Symbol", "Average Price", "Current Price", "Quantity", "Value at Cost", "Purchase Date").
+11. YOU MUST EXTRACT ALL STOCKS FROM THE PAGE - DO NOT SKIP ANY STOCK. Count all stocks carefully and ensure EVERY stock is included in your response. If there are 10 stocks on the page, your JSON array must contain exactly 10 objects.
+12. Extract values EXACTLY as they appear in the document - preserve decimal places, commas, and formatting as shown in the PDF.
+
+Return a JSON array of stock objects. If there are multiple stocks on this page, return ALL of them in the array. DO NOT skip any stock.
+

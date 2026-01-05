@@ -28,12 +28,19 @@ async def get_family_members(current_user=Depends(get_current_user)):
         print(f"Fetching family members for user_id: {user_id}")
         
         # Get user's name from metadata or email
-        user_name = "Self"
+        user_name = None
         if hasattr(user_obj, 'user_metadata') and user_obj.user_metadata:
-            user_name = user_obj.user_metadata.get("name") or user_obj.user_metadata.get("full_name") or "Self"
-        if user_name == "Self" and hasattr(user_obj, 'email') and user_obj.email:
-            # Use email as fallback if name is not available
-            user_name = user_obj.email.split("@")[0].title()  # Use part before @ as name
+            user_name = user_obj.user_metadata.get("name") or user_obj.user_metadata.get("full_name")
+        
+        # Use email as fallback if name is not available in metadata
+        if not user_name and hasattr(user_obj, 'email') and user_obj.email:
+            # Use part before @ as name, capitalize it properly
+            email_prefix = user_obj.email.split("@")[0]
+            user_name = email_prefix.replace(".", " ").replace("_", " ").title()
+        
+        # Final fallback - use "User" if nothing else is available
+        if not user_name:
+            user_name = "User"
         
         # Use service role client to bypass RLS (user already validated via get_current_user)
         response = supabase_service.table("family_members").select("*").eq("user_id", user_id).order("created_at", desc=False).execute()

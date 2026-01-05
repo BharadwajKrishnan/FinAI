@@ -220,4 +220,104 @@ class LLMService:
                 "role": role,
                 "content": content
             })
+    
+    def _extract_text_from_response(self, response) -> Optional[str]:
+        """
+        Extract text from Gemini API response.
+        This is a helper method used internally by chat() and generate_json().
+        
+        Args:
+            response: Gemini API response object
+        
+        Returns:
+            Extracted text string, or None if extraction fails
+        """
+        response_text = None
+        
+        # Try direct text attribute first
+        if hasattr(response, 'text') and response.text:
+            response_text = response.text
+        
+        # If no direct text, try extracting from candidates
+        if not response_text and hasattr(response, 'candidates') and response.candidates:
+            if len(response.candidates) > 0:
+                candidate = response.candidates[0]
+                if candidate:
+                    # Try to get content from candidate
+                    content = None
+                    if hasattr(candidate, 'content'):
+                        content = candidate.content
+                    elif hasattr(candidate, 'parts'):
+                        # Some response formats have parts directly on candidate
+                        content = type('obj', (object,), {'parts': candidate.parts})()
+                    
+                    if content:
+                        # Get parts from content
+                        parts = None
+                        if hasattr(content, 'parts'):
+                            parts = content.parts
+                        elif hasattr(content, '__iter__'):
+                            # Content might be iterable directly
+                            parts = content
+                        
+                        if parts is not None:
+                            text_parts = []
+                            try:
+                                for part in parts:
+                                    if part is None:
+                                        continue
+                                    # Extract text content
+                                    if hasattr(part, 'text') and part.text:
+                                        text_parts.append(str(part.text))
+                                if text_parts:
+                                    response_text = "".join(text_parts)
+                            except Exception as extract_error:
+                                # Try to get any string representation
+                                try:
+                                    response_text = str(response)
+                                except:
+                                    pass
+        
+        return response_text
+    
+    async def generate_json(
+        self,
+        contents: List[Dict],
+        temperature: float = 0.7,
+        max_tokens: int = 4096
+    ) -> Optional[str]:
+        """
+        Generate JSON response from Gemini API using JSON mode.
+        This method does not use conversation history - it's for one-off JSON generation.
+        
+        Args:
+            contents: List of message dictionaries in Gemini format
+            temperature: Temperature for LLM (0.0 to 2.0, default: 0.7)
+            max_tokens: Maximum tokens for LLM response (default: 4096)
+        
+        Returns:
+            Extracted text response (JSON string), or None if generation fails
+        """
+        try:
+            # Build configuration with JSON mode
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+            
+            # Run the synchronous Gemini call in a thread pool
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=config))
+            
+            # Extract text from response
+            return self._extract_text_from_response(response)
+            
+        except Exception as e:
+            return None
 
