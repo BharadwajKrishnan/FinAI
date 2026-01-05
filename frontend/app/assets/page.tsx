@@ -2137,10 +2137,21 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
+          console.log("Bank account creation response:", createdAsset);
+          
+          // Check if this is a duplicate (backend returns existing asset with duplicate flag)
+          if (createdAsset.duplicate && createdAsset.message) {
+            // Show popup notification for duplicate
+            alert(createdAsset.message);
+            return null; // Don't add to UI since it's a duplicate
+          }
+          
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
           console.error(`Failed to create bank account: ${errorData.message || response.statusText}`, errorData);
+          // Show error popup
+          alert(errorData.message || errorData.detail || "Failed to create bank account");
         }
         return null;
       }
@@ -4859,6 +4870,12 @@ export default function AssetsPage() {
                       if (dbId && typeof dbId === 'string') {
                         newBankAccount.dbId = dbId;
                         newBankAccount.id = dbId; // Use database ID as the main ID
+                      } else if (dbId === null) {
+                        // Duplicate detected - don't add to UI, popup already shown in saveBankAccountToDatabase
+                        setEditingBankAccountId(null);
+                        setIsAddAssetModalOpen(false);
+                        setSelectedAssetType("");
+                        return; // Exit early, don't add duplicate to state
                       }
                       
                       setBankAccounts((prev) => {

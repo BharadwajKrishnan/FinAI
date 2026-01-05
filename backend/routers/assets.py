@@ -206,7 +206,7 @@ async def get_assets(
         raise HTTPException(status_code=500, detail=f"Failed to fetch assets: {str(e)}")
 
 
-@router.post("/", response_model=Asset)
+@router.post("/")
 async def create_asset(
     asset: AssetCreate, 
     current_user=Depends(get_current_user),
@@ -254,6 +254,48 @@ async def create_asset(
         for field in decimal_fields:
             if field in asset_data and asset_data[field] is not None:
                 asset_data[field] = str(asset_data[field])
+        
+        # Check for duplicate bank accounts before inserting
+        duplicate_message = None
+        if asset_data.get("type") == "bank_account":
+            account_number = asset_data.get("account_number")
+            bank_name = asset_data.get("bank_name")
+            
+            if account_number:
+                # Normalize account number for comparison (case-insensitive, strip whitespace)
+                normalized_account_number = str(account_number).strip().lower()
+                
+                # Check if account number already exists in database
+                try:
+                    # Fetch all bank accounts (including NULL is_active for backward compatibility)
+                    existing_response = supabase_service.table("assets").select("id, account_number, bank_name, is_active").eq("user_id", user_id).eq("type", "bank_account").execute()
+                    all_existing_accounts = existing_response.data if existing_response.data else []
+                    # Filter to only active accounts (is_active = True or NULL)
+                    existing_accounts = [acc for acc in all_existing_accounts if acc.get("is_active") is True or acc.get("is_active") is None]
+                    
+                    for existing_account in existing_accounts:
+                        existing_account_num = existing_account.get("account_number")
+                        if existing_account_num:
+                            existing_normalized = str(existing_account_num).strip().lower()
+                            if normalized_account_number == existing_normalized:
+                                # Fetch the complete existing asset from database
+                                existing_asset_id = existing_account.get("id")
+                                if existing_asset_id:
+                                    full_asset_response = supabase_service.table("assets").select("*").eq("id", existing_asset_id).execute()
+                                    if full_asset_response.data and len(full_asset_response.data) > 0:
+                                        existing_asset = full_asset_response.data[0]
+                                        existing_bank_name = existing_asset.get("bank_name", "")
+                                        duplicate_message = f"Bank account with account number '{account_number}' was not added because it already exists in your portfolio. Bank: {existing_bank_name or 'Unknown'}"
+                                        # Add message and duplicate flag to the response
+                                        existing_asset["message"] = duplicate_message
+                                        existing_asset["duplicate"] = True
+                                        logger = logging.getLogger(__name__)
+                                        logger.info(f"Duplicate bank account detected: {account_number}. Returning existing asset with message.")
+                                        return existing_asset
+                except Exception as check_error:
+                    # Log error but continue - don't block creation if check fails
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error checking for duplicate bank account: {str(check_error)}")
         
         # Use service role client for backend operations
         # We've already validated the user via JWT and set user_id correctly
@@ -767,6 +809,7 @@ async def upload_pdf_for_asset_type(
         # Process each page separately
         created_assets = []
         errors = []
+        skipped_account_numbers = []  # Track account numbers skipped due to duplicates (for bank accounts)
         
         # Process fixed deposits or stocks
         if asset_type == "fixed_deposit":
@@ -1361,10 +1404,34 @@ async def upload_pdf_for_asset_type(
             logger.info(f"After deduplication: {len(all_bank_accounts)} unique bank accounts")
             print(f"After deduplication: {len(all_bank_accounts)} unique bank accounts")
             
+            # Fetch existing bank accounts from database to check for duplicates
+            existing_bank_accounts = []
+            existing_account_numbers = set()
+            try:
+                logger.info("Fetching existing bank accounts from database...")
+                print("Fetching existing bank accounts from database...")
+                existing_assets_response = supabase_service.table("assets").select("account_number, bank_name").eq("user_id", user_id).eq("type", "bank_account").eq("is_active", True).execute()
+                existing_bank_accounts = existing_assets_response.data if existing_assets_response.data else []
+                
+                # Normalize existing account numbers for comparison
+                for existing_account in existing_bank_accounts:
+                    existing_account_num = existing_account.get("account_number")
+                    if existing_account_num:
+                        normalized = str(existing_account_num).strip().lower()
+                        existing_account_numbers.add(normalized)
+                
+                logger.info(f"Found {len(existing_bank_accounts)} existing bank accounts in database")
+                print(f"Found {len(existing_bank_accounts)} existing bank accounts in database")
+            except Exception as e:
+                logger.warning(f"Error fetching existing bank accounts: {str(e)}")
+                print(f"Warning: Error fetching existing bank accounts: {str(e)}")
+                # Continue processing even if fetch fails
+            
             # Process all collected bank accounts
             logger.info(f"Starting to process {len(all_bank_accounts)} bank accounts for database insertion")
             print(f"Starting to process {len(all_bank_accounts)} bank accounts for database insertion")
             created_assets = []
+            skipped_account_numbers = []  # Track account numbers that were skipped due to duplicates
             for ba_idx, ba_data in enumerate(all_bank_accounts):
                 try:
                     # Get currency from market
@@ -1445,17 +1512,33 @@ async def upload_pdf_for_asset_type(
                     if 'current_value' in asset_dict and asset_dict['current_value'] is not None:
                         asset_dict['current_value'] = str(asset_dict['current_value'])
                     
-                    # Check for duplicates before inserting (check against newly created assets in this session)
+                    # Check for duplicates before inserting
+                    # First, check against existing accounts in database
+                    normalized_account_number = str(account_number).strip().lower() if account_number else ""
                     is_duplicate = False
-                    for created_asset in created_assets:
-                        if created_asset.get("type") == "bank_account":
-                            created_account_number = created_asset.get("account_number", "")
-                            created_bank_name = created_asset.get("bank_name", "")
-                            # Match by account number and bank name
-                            if account_number and created_account_number:
-                                if account_number.lower() == created_account_number.lower() and bank_name.lower() == created_bank_name.lower():
-                                    is_duplicate = True
-                                    break
+                    
+                    if normalized_account_number and normalized_account_number in existing_account_numbers:
+                        logger.info(f"Skipping bank account - account number already exists in database: {account_number}")
+                        print(f"Skipping bank account - account number already exists in database: {account_number}")
+                        skipped_account_numbers.append(account_number)
+                        is_duplicate = True
+                    
+                    # Also check against newly created assets in this session
+                    if not is_duplicate:
+                        for created_asset in created_assets:
+                            if created_asset.get("type") == "bank_account":
+                                created_account_number = created_asset.get("account_number", "")
+                                created_bank_name = created_asset.get("bank_name", "")
+                                # Match by account number (normalized)
+                                if account_number and created_account_number:
+                                    created_normalized = str(created_account_number).strip().lower()
+                            if normalized_account_number == created_normalized:
+                                logger.info(f"Skipping bank account - duplicate in current session: {account_number}")
+                                print(f"Skipping bank account - duplicate in current session: {account_number}")
+                                if account_number not in skipped_account_numbers:
+                                    skipped_account_numbers.append(account_number)
+                                is_duplicate = True
+                                break
                     
                     if is_duplicate:
                         continue
@@ -1755,12 +1838,26 @@ async def upload_pdf_for_asset_type(
             else:
                 errors.append(f"No {asset_type} found in the PDF")
         
+        # Build response message
+        message = ""
+        if asset_type == "bank_account" and skipped_account_numbers:
+            skipped_msg = f"Bank account(s) with the following account number(s) were not added because they already exist in your portfolio: {', '.join(skipped_account_numbers)}"
+            if created_assets:
+                message = f"Successfully added {len(created_assets)} bank account(s) from PDF. {skipped_msg}"
+            else:
+                message = f"No new bank accounts were added. {skipped_msg}"
+        elif created_assets:
+            message = f"Successfully added {len(created_assets)} {asset_type}(s) from PDF"
+        else:
+            message = "No assets could be extracted from the PDF"
+        
         return {
             "success": len(created_assets) > 0,
             "created_count": len(created_assets),
             "created_assets": created_assets,
             "errors": errors,
-            "message": f"Successfully added {len(created_assets)} {asset_type}(s) from PDF" if created_assets else "No assets could be extracted from the PDF"
+            "message": message,
+            "skipped_account_numbers": skipped_account_numbers if asset_type == "bank_account" else []
         }
     
     except HTTPException:

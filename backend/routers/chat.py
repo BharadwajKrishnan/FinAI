@@ -396,7 +396,7 @@ async def chat(
         if context == "assets":
             # Load assets prompt template from file
             prompt_template = _load_prompt_template(ASSETS_PROMPT_FILE)
-            # Format the template with portfolio data
+            # Format the template with portfolio data (always fresh from database - fetched on each request)
             system_prompt = prompt_template.format(portfolio_json=portfolio_json)
         
         elif context == "expenses":
