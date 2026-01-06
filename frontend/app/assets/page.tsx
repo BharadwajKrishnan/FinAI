@@ -258,6 +258,97 @@ function BankAccountPasswordModal({ onConfirm, onCancel }: BankAccountPasswordMo
   );
 }
 
+// Fixed Deposit Password Modal Component
+interface FixedDepositPasswordModalProps {
+  onConfirm: (isPasswordProtected: boolean, password?: string) => void;
+  onCancel: () => void;
+}
+
+function FixedDepositPasswordModal({ onConfirm, onCancel }: FixedDepositPasswordModalProps) {
+  const [isPasswordProtected, setIsPasswordProtected] = useState<boolean | null>(null);
+  const [password, setPassword] = useState("");
+
+  const handleYes = () => {
+    setIsPasswordProtected(true);
+  };
+
+  const handleNo = () => {
+    onConfirm(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isPasswordProtected && password.trim()) {
+      onConfirm(true, password);
+    }
+  };
+
+  if (isPasswordProtected === null) {
+    return (
+      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">PDF Password Protection</h3>
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            Is this PDF password-protected?
+          </p>
+          <div className="flex space-x-3">
+            <button
+              onClick={handleYes}
+              className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 transition-colors"
+            >
+              Yes
+            </button>
+            <button
+              onClick={handleNo}
+              className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+            >
+              No
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+      <h3 className="text-lg font-semibold text-gray-900 mb-4">Enter PDF Password</h3>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label htmlFor="fixed-deposit-pdf-password" className="block text-sm font-medium text-gray-700 mb-2">
+            Password
+          </label>
+          <input
+            type="password"
+            id="fixed-deposit-pdf-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none"
+            placeholder="Enter password"
+            autoFocus
+          />
+        </div>
+        <div className="flex space-x-3">
+          <button
+            type="submit"
+            disabled={!password.trim()}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Confirm
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 // Mutual Fund Password Modal Component
 interface MutualFundPasswordModalProps {
   onConfirm: (isPasswordProtected: boolean, password?: string) => void;
@@ -530,6 +621,10 @@ export default function AssetsPage() {
   // PDF password modal state for bank account uploads
   const [showBankAccountPasswordModal, setShowBankAccountPasswordModal] = useState(false);
   const [pendingBankAccountFile, setPendingBankAccountFile] = useState<File | null>(null);
+  
+  // PDF password modal state for fixed deposit uploads
+  const [showFixedDepositPasswordModal, setShowFixedDepositPasswordModal] = useState(false);
+  const [pendingFixedDepositFile, setPendingFixedDepositFile] = useState<File | null>(null);
   
   // PDF password modal state for mutual fund uploads
   const [showMutualFundPasswordModal, setShowMutualFundPasswordModal] = useState(false);
@@ -942,8 +1037,33 @@ export default function AssetsPage() {
 
   // Note: Family member net worth calculation removed - now handled in Profile page
 
+  // Handle PDF file selection for fixed deposits (shows password modal)
+  const handleFixedDepositFileSelect = (file: File) => {
+    setPendingFixedDepositFile(file);
+    setShowFixedDepositPasswordModal(true);
+  };
+
+  // Handle password modal confirmation for fixed deposits
+  const handleFixedDepositPasswordModalConfirm = (isPasswordProtected: boolean, password?: string) => {
+    if (pendingFixedDepositFile) {
+      handleFixedDepositPdfUpload(pendingFixedDepositFile, isPasswordProtected ? password : null);
+      setPendingFixedDepositFile(null);
+    }
+    setShowFixedDepositPasswordModal(false);
+  };
+
+  const handleFixedDepositPasswordModalCancel = () => {
+    setPendingFixedDepositFile(null);
+    setShowFixedDepositPasswordModal(false);
+    // Reset the file input if the user cancels
+    const input = document.getElementById("pdf-upload-fd-empty") as HTMLInputElement;
+    if (input) input.value = '';
+    const inputHeader = document.getElementById("pdf-upload-fd-header") as HTMLInputElement;
+    if (inputHeader) inputHeader.value = '';
+  };
+
   // Handle PDF upload for fixed deposits
-  const handleFixedDepositPdfUpload = async (file: File) => {
+  const handleFixedDepositPdfUpload = async (file: File, pdfPassword: string | null = null) => {
     setIsUploadingPdf(true);
     setUploadingPdfAssetType("fixed_deposit");
     try {
@@ -951,6 +1071,7 @@ export default function AssetsPage() {
       if (!accessToken) {
         alert("Please log in to upload files");
         setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
         return;
       }
 
@@ -958,6 +1079,9 @@ export default function AssetsPage() {
       formData.append("file", file);
       formData.append("asset_type", "fixed_deposit");
       formData.append("market", selectedMarket);
+      if (pdfPassword) {
+        formData.append("pdf_password", pdfPassword);
+      }
 
       const response = await fetch("/api/assets/upload-pdf", {
         method: "POST",
@@ -2206,6 +2330,16 @@ export default function AssetsPage() {
           <BankAccountPasswordModal
             onConfirm={handleBankAccountPasswordModalConfirm}
             onCancel={handleBankAccountPasswordModalCancel}
+          />
+        </div>
+      )}
+      
+      {/* PDF Password Modal for Fixed Deposit Uploads */}
+      {showFixedDepositPasswordModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <FixedDepositPasswordModal
+            onConfirm={handleFixedDepositPasswordModalConfirm}
+            onCancel={handleFixedDepositPasswordModalCancel}
           />
         </div>
       )}
@@ -3654,7 +3788,7 @@ export default function AssetsPage() {
                                 className="hidden"
                                 onChange={(e) => {
                                   if (e.target.files && e.target.files[0]) {
-                                    handleFixedDepositPdfUpload(e.target.files[0]);
+                                    handleFixedDepositFileSelect(e.target.files[0]);
                                     // Reset input so the same file can be selected again
                                     e.target.value = '';
                                   }
@@ -3700,7 +3834,7 @@ export default function AssetsPage() {
                                   className="hidden"
                                   onChange={(e) => {
                                     if (e.target.files && e.target.files[0]) {
-                                      handleFixedDepositPdfUpload(e.target.files[0]);
+                                      handleFixedDepositFileSelect(e.target.files[0]);
                                       // Reset input so the same file can be selected again
                                       e.target.value = '';
                                     }
