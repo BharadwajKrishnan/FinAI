@@ -920,6 +920,7 @@ async def upload_pdf_for_asset_type(
         skipped_account_numbers = []  # Track account numbers skipped due to duplicates (for bank accounts)
         skipped_fd_keys = []  # Track fixed deposits skipped due to duplicates (for fixed deposits)
         skipped_stocks = []  # Track stocks skipped due to duplicates (for stocks)
+        skipped_mutual_funds = []  # Track mutual funds skipped due to duplicates (for mutual funds)
         
         # Process fixed deposits or stocks
         if asset_type == "fixed_deposit":
@@ -2453,262 +2454,529 @@ async def upload_pdf_for_asset_type(
                     errors.append(error_msg)
         
         elif asset_type == "mutual_fund":
+            logger = logging.getLogger(__name__)
+            logger.info("=== MUTUAL FUND PROCESSING STARTED ===")
+            print("=== MUTUAL FUND PROCESSING STARTED ===")
+            
             if not _mutual_fund_llm_service.api_key:
+                logger.error("GEMINI_API_KEY not found")
+                print("ERROR: GEMINI_API_KEY not found")
                 raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
+            
+            logger.info("API key found, proceeding with mutual fund extraction")
+            print("API key found, proceeding with mutual fund extraction")
+            
+            # Fetch family members for the user
+            logger.info("Fetching family members...")
+            print("Fetching family members...")
+            family_members_list = []
+            try:
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members_list = family_members_response.data if family_members_response.data else []
+                logger.info(f"Found {len(family_members_list)} family members")
+                print(f"Found {len(family_members_list)} family members")
+            except Exception as e:
+                logger.warning(f"Failed to fetch family members: {str(e)}")
+                print(f"Warning: Failed to fetch family members: {str(e)}")
+            
+            # Format family members for the prompt and create mapping
+            family_members_text = ""
+            family_members_map = {}
+            if family_members_list:
+                family_members_lines = []
+                for fm in family_members_list:
+                    name = fm.get("name", "")
+                    relationship = fm.get("relationship", "")
+                    notes = fm.get("notes", "")
+                    fm_id = fm.get("id", "")
+                    if name:
+                        line = f"- Name: {name}, Relationship: {relationship}"
+                        if notes:
+                            line += f", Notes: {notes}"
+                        family_members_lines.append(line)
+                        # Create mapping for owner name matching
+                        if fm_id:
+                            family_members_map[name.lower()] = str(fm_id)
+                if family_members_lines:
+                    family_members_text = "\n".join(family_members_lines)
+            
+            logger.info(f"Family members formatted. Text length: {len(family_members_text)}")
+            print(f"Family members formatted. Text length: {len(family_members_text)}")
             
             # Fetch existing mutual funds to prevent duplicates
             existing_mutual_funds = []
+            existing_fund_codes = set()
             try:
                 existing_assets_response = supabase_service.table("assets").select("mutual_fund_code, name, fund_house").eq("user_id", user_id).eq("type", "mutual_fund").eq("is_active", True).execute()
                 existing_mutual_funds = existing_assets_response.data if existing_assets_response.data else []
-            except Exception as e:
-                pass
-            
-            # Format existing mutual funds for the prompt
-            existing_funds_text = ""
-            if existing_mutual_funds:
-                existing_funds_list = []
+                # Create a set of normalized fund codes for quick lookup
                 for fund in existing_mutual_funds:
-                    fund_name = fund.get("name", "Unknown")
                     fund_code = fund.get("mutual_fund_code", "")
-                    fund_house = fund.get("fund_house", "")
                     if fund_code:
-                        if fund_house:
-                            existing_funds_list.append(f"- Name: {fund_name}, Fund Code: {fund_code}, Fund House: {fund_house}")
-                        else:
-                            existing_funds_list.append(f"- Name: {fund_name}, Fund Code: {fund_code}")
-                    else:
-                        existing_funds_list.append(f"- Name: {fund_name}")
-                existing_funds_text = "\n".join(existing_funds_list)
+                        existing_fund_codes.add(fund_code.lower().strip())
+                logger.info(f"Found {len(existing_mutual_funds)} existing mutual funds in database")
+                print(f"Found {len(existing_mutual_funds)} existing mutual funds in database")
+            except Exception as e:
+                logger.warning(f"Failed to fetch existing mutual funds: {str(e)}")
+                print(f"Warning: Failed to fetch existing mutual funds: {str(e)}")
             
-            # Process each page
-            # Store context from previous pages (input and output pairs)
-            previous_contexts = []
+            # Combine all PDF pages into a single document
+            complete_pdf_content = "\n\n--- Page Separator ---\n\n".join(pdf_pages)
+            logger.info(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
+            print(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
             
-            for page_idx, page_content in enumerate(pdf_pages):
-                if not page_content or not page_content.strip():
-                    continue
+            # Process the complete PDF document
+            all_mutual_funds = []
+            
+            logger.info(f"Starting mutual fund extraction. PDF has {len(pdf_pages)} pages. Total content length: {len(complete_pdf_content)} chars")
+            
+            try:
+                # Load prompt from file and replace placeholders with actual content
+                logger.info("Loading prompt from file...")
+                print("Loading prompt from file...")
+                prompt_template = load_prompt("mutual_funds_prompt.txt")
+                logger.info("Prompt loaded successfully")
+                print("Prompt loaded successfully")
                 
+                logger.info("Formatting prompt with PDF content and family members...")
+                print("Formatting prompt...")
+                instruction_prompt = prompt_template.format(
+                    page=complete_pdf_content,
+                    family_members=family_members_text if family_members_text else "No family members have been added yet."
+                )
+                logger.info(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                print(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                
+                # Use chat function from LLMService - LLM will return a JSON object/array
+                logger.info("Calling LLM for mutual fund extraction...")
+                print("Calling LLM for mutual fund extraction...")
+                logger.info("WAITING for LLM response - blocking until complete...")
+                print("WAITING for LLM response - blocking until complete...")
+                logger.info("NOTE: Other requests may be processed concurrently while waiting for LLM (this is normal async behavior)")
+                
+                # Track timing for LLM call
+                import time
+                start_time = time.time()
+                print("LLM call started - this may take 30-120 seconds for large PDFs...")
+                
+                text_response = await _mutual_fund_llm_service.chat(
+                    system_prompt="<Role>You are a helpful financial assistant that extracts mutual fund and ETF information from a document.</Role>",
+                    message=instruction_prompt,
+                    max_tokens=30000,
+                    temperature=0.7
+                )
+                
+                end_time = time.time()
+                duration = end_time - start_time
+                logger.info(f"LLM call completed in {duration:.2f} seconds.")
+                print(f"LLM call completed in {duration:.2f} seconds.")
+                
+                logger.info("LLM response received - proceeding with processing...")
+                print("LLM response received - proceeding with processing...")
+                print(f"Text response: {text_response}")
+                logger.info(f"LLM response type: {type(text_response)}, length: {len(text_response) if text_response else 0}")
+                
+                if not text_response:
+                    errors.append("No response from LLM")
+                    logger.error("LLM returned empty response")
+                elif text_response.startswith("Error:"):
+                    errors.append(f"LLM returned error: {text_response}")
+                    logger.error(f"LLM error: {text_response}")
+                    error_lower = text_response.lower()
+                    if ("503" in text_response or "unavailable" in error_lower or 
+                        "overloaded" in error_lower or "service unavailable" in error_lower):
+                        message = f"Failed to extract assets from PDF: The AI service is temporarily unavailable. Please try again in a few moments. Details: {text_response}"
+                    elif "Could not extract response" in text_response:
+                        message = f"Failed to extract assets from PDF: The AI service returned an unexpected response format. This may be due to service overload. Details: {text_response}"
+                    else:
+                        message = f"Failed to extract assets from PDF due to an AI processing error. Details: {text_response}"
+                    return {
+                        "success": False,
+                        "created_count": 0,
+                        "created_assets": [],
+                        "errors": errors,
+                        "message": message,
+                        "skipped_account_numbers": [],
+                        "skipped_fixed_deposits": [],
+                        "skipped_stocks": [],
+                        "skipped_mutual_funds": []
+                    }
+                else:
+                    logger.info("Processing LLM response...")
+                    print("Processing LLM response...")
+                    # Parse JSON response - LLM returns a JSON object or array
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        logger.info("Cleaning JSON response...")
+                        print("Cleaning JSON response...")
+                        cleaned_response = clean_json_response(text_response)
+                        
+                        # Debug: Log cleaned response
+                        logger.info(f"Cleaned response (first 200 chars): {cleaned_response[:200]}")
+                        print(f"Cleaned response (first 200 chars): {cleaned_response[:200]}")
+                        
+                        # Parse the JSON response
+                        logger.info("Parsing JSON...")
+                        print("Parsing JSON...")
+                        try:
+                            mutual_funds_list = json.loads(cleaned_response)
+                            if not isinstance(mutual_funds_list, list):
+                                # If it's a single object, wrap it in a list
+                                if isinstance(mutual_funds_list, dict):
+                                    mutual_funds_list = [mutual_funds_list]
+                                else:
+                                    mutual_funds_list = []
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSON decode error: {str(e)}")
+                            logger.error(f"Cleaned response (first 500 chars): {cleaned_response[:500]}")
+                            logger.error(f"Raw response (first 500 chars): {text_response[:500]}")
+                            print(f"ERROR: JSON decode failed. Error: {str(e)}")
+                            print(f"Cleaned response (first 500 chars): {cleaned_response[:500]}")
+                            
+                            # Try to extract JSON from the response if it's partially valid
+                            try:
+                                # First, try to find the first complete JSON array
+                                json_start = cleaned_response.find('[')
+                                if json_start != -1:
+                                    json_substring = cleaned_response[json_start:]
+                                    bracket_count = 0
+                                    in_string = False
+                                    escape_next = False
+                                    array_end = -1
+                                    
+                                    for i, char in enumerate(json_substring):
+                                        if escape_next: 
+                                            escape_next = False
+                                            continue
+                                        if char == '\\': 
+                                            escape_next = True
+                                            continue
+                                        if char == '"' and not escape_next: 
+                                            in_string = not in_string
+                                            continue
+                                        if not in_string:
+                                            if char == '[': 
+                                                bracket_count += 1
+                                            elif char == ']':
+                                                bracket_count -= 1
+                                                if bracket_count == 0: 
+                                                    array_end = i + 1
+                                                    break
+                                    
+                                    if array_end > 0:
+                                        first_array = json_substring[:array_end]
+                                        mutual_funds_list = json.loads(first_array)
+                                        if not isinstance(mutual_funds_list, list):
+                                            if isinstance(mutual_funds_list, dict):
+                                                mutual_funds_list = [mutual_funds_list]
+                                            else:
+                                                mutual_funds_list = []
+                                    else:
+                                        # If no complete array found, try to extract individual objects
+                                        mutual_funds_list = []
+                                        i = 0
+                                        while i < len(json_substring):
+                                            # Find next '{'
+                                            obj_start = json_substring.find('{', i)
+                                            if obj_start == -1:
+                                                break
+                                            
+                                            # Find matching '}'
+                                            bracket_count = 0
+                                            in_string = False
+                                            escape_next = False
+                                            obj_end = -1
+                                            
+                                            for j in range(obj_start, len(json_substring)):
+                                                char = json_substring[j]
+                                                if escape_next:
+                                                    escape_next = False
+                                                    continue
+                                                if char == '\\':
+                                                    escape_next = True
+                                                    continue
+                                                if char == '"' and not escape_next:
+                                                    in_string = not in_string
+                                                    continue
+                                                if not in_string:
+                                                    if char == '{':
+                                                        bracket_count += 1
+                                                    elif char == '}':
+                                                        bracket_count -= 1
+                                                        if bracket_count == 0:
+                                                            obj_end = j + 1
+                                                            break
+                                            
+                                            if obj_end > obj_start:
+                                                try:
+                                                    obj_str = json_substring[obj_start:obj_end]
+                                                    obj = json.loads(obj_str)
+                                                    # Validate that it has required fields
+                                                    if isinstance(obj, dict) and (obj.get("Fund Name") or obj.get("Fund Code") or obj.get("fund_name") or obj.get("fund_code")):
+                                                        mutual_funds_list.append(obj)
+                                                except:
+                                                    pass
+                                                i = obj_end
+                                            else:
+                                                break
+                                else:
+                                    logger.warning("Could not find any JSON array or object start in response")
+                                    print("WARNING: Could not find any JSON array or object start in response")
+                                    mutual_funds_list = []
+                            except Exception as fix_error:
+                                logger.error(f"Failed to extract valid JSON from partial response: {str(fix_error)}")
+                                print(f"Failed to extract valid JSON: {str(fix_error)}")
+                                mutual_funds_list = []
+                        
+                        logger.info(f"Parsed {len(mutual_funds_list)} mutual funds from LLM response")
+                        print(f"Parsed {len(mutual_funds_list)} mutual funds from LLM response")
+                        
+                        # Process each mutual fund from the parsed list
+                        for mf_data in mutual_funds_list:
+                            if not isinstance(mf_data, dict):
+                                continue
+                            all_mutual_funds.append(mf_data)
+                            logger.info(f"Added mutual fund: {mf_data.get('Fund Name', 'Unknown')}")
+                            print(f"Added mutual fund: {mf_data.get('Fund Name', 'Unknown')}")
+                        
+                        logger.info(f"Total mutual funds collected: {len(all_mutual_funds)}")
+                        print(f"Total mutual funds collected: {len(all_mutual_funds)}")
+                        
+                        # Deduplicate based on fund code
+                        seen_fund_codes = set()
+                        unique_mutual_funds = []
+                        for mf in all_mutual_funds:
+                            fund_code = mf.get("Fund Code") or mf.get("fund_code") or mf.get("Scheme Code") or mf.get("ISIN") or mf.get("Code") or mf.get("code")
+                            if fund_code:
+                                fund_code_normalized = fund_code.lower().strip()
+                                if fund_code_normalized not in seen_fund_codes:
+                                    seen_fund_codes.add(fund_code_normalized)
+                                    unique_mutual_funds.append(mf)
+                            else:
+                                # If no fund code, include it (but this shouldn't happen per prompt requirements)
+                                unique_mutual_funds.append(mf)
+                        
+                        logger.info(f"After deduplication: {len(unique_mutual_funds)} unique mutual funds")
+                        print(f"After deduplication: {len(unique_mutual_funds)} unique mutual funds")
+                        all_mutual_funds = unique_mutual_funds
+                        
+                    except json.JSONDecodeError as e:
+                        error_msg = f"Invalid JSON response from LLM: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"JSON decode error: {error_msg}")
+                        logger.error(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+                        logger.error(f"Raw response (first 500 chars): {text_response[:500]}")
+                        print(f"ERROR: JSON decode failed. Error: {str(e)}")
+                        print(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+            
+            except Exception as e:
+                error_msg = f"Error processing mutual funds: {str(e)}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+                import traceback
+                logger.error(traceback.format_exc())
+                print(f"ERROR: {error_msg}")
+            
+            # Process all collected mutual funds for database insertion
+            skipped_mutual_funds = []
+            logger.info(f"Starting to process {len(all_mutual_funds)} mutual funds for database insertion")
+            print(f"Starting to process {len(all_mutual_funds)} mutual funds for database insertion")
+            
+            for mf_idx, mf_data in enumerate(all_mutual_funds):
                 try:
-                    # Load prompt from file and format with existing funds
-                    prompt_template = load_prompt("mutual_funds_prompt.txt")
-                    existing_funds_placeholder = existing_funds_text if existing_funds_text else "No mutual funds have been added yet."
-                    instruction_prompt = prompt_template.format(existing_funds_text=existing_funds_placeholder)
+                    # Get currency from market
+                    asset_market = market or "india"
+                    currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
                     
-                    # Build contents list using helper function
-                    contents = build_contents_list(instruction_prompt, previous_contexts, page_content, page_idx, "mutual_fund")
+                    # Extract and validate fields (handle multiple possible key names)
+                    fund_name = mf_data.get("Fund Name") or mf_data.get("fund_name") or mf_data.get("Name") or mf_data.get("Scheme Name") or "Unknown Fund"
+                    fund_code = mf_data.get("Fund Code") or mf_data.get("fund_code") or mf_data.get("Scheme Code") or mf_data.get("ISIN") or mf_data.get("Code") or mf_data.get("code")
+                    fund_house = mf_data.get("Fund House") or mf_data.get("fund_house") or mf_data.get("AMC") or mf_data.get("Asset Management Company")
+                    units = mf_data.get("Units") or mf_data.get("units") or mf_data.get("No. of Units") or mf_data.get("Quantity") or mf_data.get("quantity")
+                    nav = mf_data.get("NAV") or mf_data.get("nav") or mf_data.get("Net Asset Value") or mf_data.get("Current NAV")
+                    purchase_date_str = mf_data.get("Purchase Date") or mf_data.get("purchase_date") or mf_data.get("Date of Investment") or mf_data.get("Investment Date")
+                    value_at_cost = mf_data.get("Value at Cost") or mf_data.get("value_at_cost") or mf_data.get("Amount Invested") or mf_data.get("Total Invested") or mf_data.get("Investment Amount") or mf_data.get("Purchase Value")
+                    current_value = mf_data.get("Current Value") or mf_data.get("Current Worth") or mf_data.get("Market Value") or mf_data.get("current_value")
+                    owner_name = mf_data.get("Owner Name") or mf_data.get("owner_name") or "self"
                     
-                    # Call Gemini with JSON mode using LLMService
-                    text_response = await _mutual_fund_llm_service.generate_json(contents)
-                    
-                    if not text_response:
-                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                    # Validate required fields (fund_code is required)
+                    if not fund_name or not fund_code or units is None:
+                        error_msg = f"MF {mf_idx + 1}: Missing required fields (fund_name, fund_code, or units)"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
                         continue
                     
-                    # Parse JSON response using helper function
-                    try:
-                        mutual_funds, cleaned_response = clean_and_parse_json_response(text_response)
-                        
-                        # Store input and output for future context (for pages after the first)
-                        previous_contexts.append((page_content, cleaned_response))
-                        
-                        # Skip if empty array (no mutual funds on this page)
-                        if len(mutual_funds) == 0:
-                            continue
-                        
-                        # Process each mutual fund
-                        for mf_idx, mf_data in enumerate(mutual_funds):
-                            try:
-                                # Get currency from market
-                                asset_market = market or "india"
-                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
-                                
-                                # Extract and validate fields (handle multiple possible key names)
-                                fund_name = mf_data.get("Fund Name") or mf_data.get("fund_name") or mf_data.get("Name") or mf_data.get("Scheme Name") or "Unknown Fund"
-                                fund_code = mf_data.get("Fund Code") or mf_data.get("fund_code") or mf_data.get("Scheme Code") or mf_data.get("ISIN") or mf_data.get("Code") or mf_data.get("code")
-                                fund_house = mf_data.get("Fund House") or mf_data.get("fund_house") or mf_data.get("AMC") or mf_data.get("Asset Management Company")
-                                units = mf_data.get("Units") or mf_data.get("units") or mf_data.get("No. of Units") or mf_data.get("Quantity") or mf_data.get("quantity")
-                                nav = mf_data.get("NAV") or mf_data.get("nav") or mf_data.get("Net Asset Value") or mf_data.get("Current NAV")
-                                purchase_date_str = mf_data.get("Purchase Date") or mf_data.get("purchase_date") or mf_data.get("Date of Investment") or mf_data.get("Investment Date")
-                                value_at_cost = mf_data.get("Value at Cost") or mf_data.get("value_at_cost") or mf_data.get("Amount Invested") or mf_data.get("Total Invested") or mf_data.get("Investment Amount") or mf_data.get("Purchase Value")
-                                current_value = mf_data.get("Current Value") or mf_data.get("Current Worth") or mf_data.get("Market Value") or mf_data.get("current_value")
-                                owner_name = mf_data.get("Owner Name") or mf_data.get("owner_name") or "self"
-                                
-                                # Validate required fields (fund_code is required)
-                                if not fund_name or not fund_code or units is None:
-                                    error_msg = f"Page {page_idx + 1}, MF {mf_idx + 1}: Missing required fields (fund_name, fund_code, or units)"
-                                    errors.append(error_msg)
-                                    continue
-                                
-                                # Helper function to clean numeric strings (remove commas, spaces, currency symbols)
-                                def clean_numeric_string(value):
-                                    if isinstance(value, str):
-                                        # Remove commas, spaces, and other non-numeric characters except decimal point
-                                        cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
-                                        return cleaned
-                                    return str(value)
-                                
-                                # Convert units to float (clean numeric strings first)
-                                try:
-                                    units_cleaned = clean_numeric_string(units)
-                                    units_float = float(units_cleaned)
-                                except (ValueError, TypeError) as e:
-                                    error_msg = f"Page {page_idx + 1}, MF {mf_idx + 1}: Invalid units value: {units}"
-                                    errors.append(error_msg)
-                                    continue
-                                
-                                # Convert NAV to float if provided (clean numeric strings first)
-                                nav_float = None
-                                if nav:
-                                    try:
-                                        nav_cleaned = clean_numeric_string(nav)
-                                        nav_float = float(nav_cleaned)
-                                    except (ValueError, TypeError):
-                                        pass
-                                
-                                # Convert value_at_cost to float if provided (clean numeric strings first)
-                                value_at_cost_float = None
-                                if value_at_cost:
-                                    try:
-                                        value_at_cost_cleaned = clean_numeric_string(value_at_cost)
-                                        value_at_cost_float = float(value_at_cost_cleaned)
-                                    except (ValueError, TypeError):
-                                        pass
-                                
-                                # Convert current_value to float if provided (clean numeric strings first)
-                                current_value_float = None
-                                if current_value:
-                                    try:
-                                        current_value_cleaned = clean_numeric_string(current_value)
-                                        current_value_float = float(current_value_cleaned)
-                                    except (ValueError, TypeError):
-                                        current_value_float = 0.0
-                                else:
-                                    # If not provided, set to 0 (do not calculate)
-                                    current_value_float = 0.0
-                                
-                                # Parse purchase date if provided
-                                purchase_date = None
-                                if purchase_date_str:
-                                    try:
-                                        purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
-                                    except:
-                                        try:
-                                            purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
-                                        except:
-                                            try:
-                                                purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
-                                            except:
-                                                pass
-                                
-                                # Map owner name to family member ID
-                                family_member_id = None
-                                owner_name_lower = owner_name.lower().strip()
-                                if owner_name_lower in ["self", "me", "myself", ""]:
-                                    family_member_id = None
-                                elif owner_name_lower in family_members_map:
-                                    family_member_id = family_members_map[owner_name_lower]
-                                else:
-                                    # Try partial match
-                                    for fm_name, fm_id in family_members_map.items():
-                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
-                                            family_member_id = fm_id
-                                            break
-                                
-                                # Build asset data
-                                asset_data = {
-                                    "name": fund_name,
-                                    "type": "mutual_fund",
-                                    "currency": currency,
-                                    "mutual_fund_code": fund_code,
-                                    "units": units_float,
-                                    "is_active": True,
-                                    "family_member_id": family_member_id
-                                }
-                                
-                                # Add optional fields if provided
-                                if fund_house:
-                                    asset_data["fund_house"] = fund_house
-                                if nav_float is not None:
-                                    asset_data["nav"] = nav_float
-                                if purchase_date:
-                                    asset_data["nav_purchase_date"] = purchase_date.isoformat()
-                                if current_value_float is not None:
-                                    asset_data["current_value"] = current_value_float
-                                
-                                # Store value_at_cost in notes field as JSON (since database doesn't have a separate field)
-                                # Format: {"value_at_cost": "1234.56"}
-                                if value_at_cost_float is not None:
-                                    notes_data = {"value_at_cost": str(value_at_cost_float)}
-                                    asset_data["notes"] = json.dumps(notes_data)
-                                
-                                # Create AssetCreate object
-                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
-                                asset_create.model_validate_asset_fields()
-                                
-                                # Convert to dict
-                                try:
-                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
-                                except AttributeError:
-                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
-                                
-                                asset_dict["user_id"] = user_id
-                                
-                                # Convert decimals to strings
-                                decimal_fields = ['units', 'nav', 'current_value']
-                                for field in decimal_fields:
-                                    if field in asset_dict and asset_dict[field] is not None:
-                                        asset_dict[field] = str(asset_dict[field])
-                                
-                                # Check for duplicates before inserting (check both existing DB records and newly created ones)
-                                is_duplicate = False
-                                # Check in existing mutual funds list
-                                for existing_fund in existing_mutual_funds:
-                                    existing_code = existing_fund.get("mutual_fund_code", "")
-                                    if existing_code and fund_code and existing_code.lower() == fund_code.lower():
-                                        is_duplicate = True
-                                        break
-                                
-                                # Check in newly created assets in this session
-                                if not is_duplicate:
-                                    for created_asset in created_assets:
-                                        if created_asset.get("type") == "mutual_fund":
-                                            created_code = created_asset.get("mutual_fund_code", "")
-                                            if created_code and fund_code and created_code.lower() == fund_code.lower():
-                                                is_duplicate = True
-                                                break
-                                
-                                if is_duplicate:
-                                    continue
-                                
-                                # Insert into database
-                                response = supabase_service.table("assets").insert(asset_dict).execute()
-                                if response.data and len(response.data) > 0:
-                                    created_assets.append(response.data[0])
-                                    # Also add to existing_mutual_funds list to prevent duplicates in subsequent pages
-                                    existing_mutual_funds.append({
-                                        "mutual_fund_code": fund_code,
-                                        "name": fund_name,
-                                        "fund_house": fund_house
-                                    })
-                                else:
-                                    error_msg = f"Page {page_idx + 1}: Failed to create mutual fund: {fund_name}"
-                                    errors.append(error_msg)
-                                    
-                            except Exception as e:
-                                errors.append(f"Page {page_idx + 1}: Error processing mutual fund: {str(e)}")
+                    # Helper function to clean numeric strings (remove commas, spaces, currency symbols)
+                    def clean_numeric_string(value):
+                        if isinstance(value, str):
+                            # Remove commas, spaces, and other non-numeric characters except decimal point
+                            cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
+                            return cleaned
+                        return str(value)
                     
-                    except json.JSONDecodeError as e:
-                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
-                    except Exception as e:
-                        errors.append(f"Page {page_idx + 1}: {str(e)}")
-                
+                    # Convert units to float (clean numeric strings first)
+                    try:
+                        units_cleaned = clean_numeric_string(units)
+                        units_float = float(units_cleaned)
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"MF {mf_idx + 1}: Invalid units value: {units}"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        continue
+                    
+                    # Convert NAV to float if provided (clean numeric strings first)
+                    nav_float = None
+                    if nav:
+                        try:
+                            nav_cleaned = clean_numeric_string(nav)
+                            nav_float = float(nav_cleaned)
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # Convert value_at_cost to float if provided (clean numeric strings first)
+                    value_at_cost_float = None
+                    if value_at_cost:
+                        try:
+                            value_at_cost_cleaned = clean_numeric_string(value_at_cost)
+                            value_at_cost_float = float(value_at_cost_cleaned)
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # Convert current_value to float if provided (clean numeric strings first)
+                    current_value_float = None
+                    if current_value:
+                        try:
+                            current_value_cleaned = clean_numeric_string(current_value)
+                            current_value_float = float(current_value_cleaned)
+                        except (ValueError, TypeError):
+                            current_value_float = 0.0
+                    else:
+                        # If not provided, set to 0 (do not calculate)
+                        current_value_float = 0.0
+                    
+                    # Parse purchase date if provided
+                    purchase_date = None
+                    if purchase_date_str:
+                        try:
+                            purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
+                        except:
+                            try:
+                                purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
+                            except:
+                                try:
+                                    purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
+                                except:
+                                    pass
+                    
+                    # Map owner name to family member ID
+                    family_member_id = None
+                    owner_name_lower = owner_name.lower().strip()
+                    if owner_name_lower in ["self", "me", "myself", ""]:
+                        family_member_id = None
+                    elif owner_name_lower in family_members_map:
+                        family_member_id = family_members_map[owner_name_lower]
+                    else:
+                        # Try partial match
+                        for fm_name, fm_id in family_members_map.items():
+                            if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                family_member_id = fm_id
+                                break
+                    
+                    # Check for duplicates before processing
+                    is_duplicate = False
+                    fund_code_normalized = fund_code.lower().strip()
+                    
+                    # Check in existing mutual funds from database
+                    if fund_code_normalized in existing_fund_codes:
+                        logger.info(f"Skipping mutual fund - already exists in database: {fund_name} ({fund_code})")
+                        print(f"Skipping mutual fund - already exists in database: {fund_name} ({fund_code})")
+                        skipped_mutual_funds.append(f"{fund_name} ({fund_code})")
+                        is_duplicate = True
+                    
+                    # Check in newly created assets in this session
+                    if not is_duplicate:
+                        for created_asset in created_assets:
+                            if created_asset.get("type") == "mutual_fund":
+                                created_code = created_asset.get("mutual_fund_code", "")
+                                if created_code and fund_code_normalized == created_code.lower().strip():
+                                    logger.info(f"Skipping mutual fund - duplicate in current session: {fund_name} ({fund_code})")
+                                    print(f"Skipping mutual fund - duplicate in current session: {fund_name} ({fund_code})")
+                                    if f"{fund_name} ({fund_code})" not in skipped_mutual_funds:
+                                        skipped_mutual_funds.append(f"{fund_name} ({fund_code})")
+                                    is_duplicate = True
+                                    break
+                    
+                    if is_duplicate:
+                        continue
+                    
+                    # Build asset data
+                    asset_data = {
+                        "name": fund_name,
+                        "type": "mutual_fund",
+                        "currency": currency,
+                        "mutual_fund_code": fund_code,
+                        "units": units_float,
+                        "is_active": True,
+                        "family_member_id": family_member_id
+                    }
+                    
+                    # Add optional fields if provided
+                    if fund_house:
+                        asset_data["fund_house"] = fund_house
+                    if nav_float is not None:
+                        asset_data["nav"] = nav_float
+                    if purchase_date:
+                        asset_data["nav_purchase_date"] = purchase_date.isoformat()
+                    if current_value_float is not None:
+                        asset_data["current_value"] = current_value_float
+                    
+                    # Store value_at_cost in notes field as JSON (since database doesn't have a separate field)
+                    # Format: {"value_at_cost": "1234.56"}
+                    if value_at_cost_float is not None:
+                        notes_data = {"value_at_cost": str(value_at_cost_float)}
+                        asset_data["notes"] = json.dumps(notes_data)
+                    
+                    # Create AssetCreate object
+                    asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                    asset_create.model_validate_asset_fields()
+                    
+                    # Convert to dict
+                    try:
+                        asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                    except AttributeError:
+                        asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                    
+                    asset_dict["user_id"] = user_id
+                    
+                    # Convert decimals to strings
+                    decimal_fields = ['units', 'nav', 'current_value']
+                    for field in decimal_fields:
+                        if field in asset_dict and asset_dict[field] is not None:
+                            asset_dict[field] = str(asset_dict[field])
+                    
+                    # Insert into database
+                    logger.info(f"Inserting mutual fund into database: {fund_name} ({fund_code})")
+                    print(f"Inserting mutual fund into database: {fund_name} ({fund_code})")
+                    response = supabase_service.table("assets").insert(asset_dict).execute()
+                    if response.data and len(response.data) > 0:
+                        created_assets.append(response.data[0])
+                        # Add to existing_fund_codes to prevent duplicates in subsequent processing
+                        existing_fund_codes.add(fund_code_normalized)
+                        logger.info(f"Successfully created mutual fund: {fund_name} ({fund_code})")
+                        print(f"Successfully created mutual fund: {fund_name} ({fund_code})")
+                    else:
+                        error_msg = f"Failed to create mutual fund: {fund_name}"
+                        logger.error(error_msg)
+                        print(f"ERROR: {error_msg}")
+                        errors.append(error_msg)
+                        
                 except Exception as e:
-                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
-                
-                # Add 5-second delay after processing each page to prevent LLM overload
-                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
-                    await asyncio.sleep(5)
+                    error_msg = f"Mutual fund {mf_idx + 1}: Error processing mutual fund: {str(e)}"
+                    logger.error(error_msg)
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    print(f"ERROR: {error_msg}")
+                    errors.append(error_msg)
         
         else:
             errors.append(f"Unsupported asset type: {asset_type}")
@@ -2745,6 +3013,12 @@ async def upload_pdf_for_asset_type(
                 message = f"Successfully added {len(created_assets)} stock(s) from PDF. {skipped_msg}"
             else:
                 message = f"No new stocks were added. {skipped_msg}"
+        elif asset_type == "mutual_fund" and skipped_mutual_funds:
+            skipped_msg = f"Mutual fund(s) with the following details were not added because they already exist in your portfolio: {', '.join(skipped_mutual_funds)}"
+            if created_assets:
+                message = f"Successfully added {len(created_assets)} mutual fund(s) from PDF. {skipped_msg}"
+            else:
+                message = f"No new mutual funds were added. {skipped_msg}"
         elif created_assets:
             message = f"Successfully added {len(created_assets)} {asset_type}(s) from PDF"
         else:
@@ -2768,7 +3042,8 @@ async def upload_pdf_for_asset_type(
             "message": message,
             "skipped_account_numbers": skipped_account_numbers if asset_type == "bank_account" else [],
             "skipped_fixed_deposits": skipped_fd_keys if asset_type == "fixed_deposit" else [],
-            "skipped_stocks": skipped_stocks if asset_type == "stock" else []
+            "skipped_stocks": skipped_stocks if asset_type == "stock" else [],
+            "skipped_mutual_funds": skipped_mutual_funds if asset_type == "mutual_fund" else []
         }
     
     except HTTPException:

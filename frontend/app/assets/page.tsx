@@ -1617,6 +1617,7 @@ export default function AssetsPage() {
   const handleMutualFundPdfUpload = async (file: File, pdfPassword: string | null = null) => {
     setIsUploadingPdf(true);
     setUploadingPdfAssetType("mutual_fund");
+    let isNetworkError = false; // Flag to track network errors
     try {
       const accessToken = localStorage.getItem("access_token");
       if (!accessToken) {
@@ -1634,6 +1635,27 @@ export default function AssetsPage() {
         formData.append("pdf_password", pdfPassword);
       }
 
+      // Get initial asset count for polling
+      const getCurrentAssetCount = async (): Promise<number> => {
+        try {
+          const accessToken = localStorage.getItem("access_token");
+          if (!accessToken) return 0;
+          const response = await fetch("/api/assets", {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            return data.filter((a: any) => a.type === "mutual_fund" && a.is_active).length;
+          }
+        } catch (error) {
+          console.error("Error getting asset count:", error);
+        }
+        return 0;
+      };
+      
+      const initialMfCount = await getCurrentAssetCount();
+
+      // No timeout - LLM may take a long time to process large PDFs
       const response = await fetch("/api/assets/upload-pdf", {
         method: "POST",
         headers: {
@@ -1644,19 +1666,123 @@ export default function AssetsPage() {
 
       const data = await response.json();
 
-      if (response.ok && data.success) {
-        alert(data.message || `Successfully added ${data.created_count} mutual fund(s) from PDF`);
-        // Refresh assets to show the newly created mutual funds
+      if (response.ok) {
+        // Clear any existing polling interval to prevent duplicate alerts
+        if ((window as any).pdfUploadPollInterval) {
+          clearInterval((window as any).pdfUploadPollInterval);
+          delete (window as any).pdfUploadPollInterval;
+        }
+        
+        // Always refresh assets to get the latest data
         await fetchAssets();
+        
+        if (data.success && data.created_count > 0) {
+          // Show success message with details about skipped mutual funds if any
+          let message = data.message || `Successfully added ${data.created_count} mutual fund(s) from PDF`;
+          if (data.skipped_mutual_funds && data.skipped_mutual_funds.length > 0) {
+            message += `\n\nSkipped ${data.skipped_mutual_funds.length} mutual fund(s) that already exist: ${data.skipped_mutual_funds.join(", ")}`;
+          }
+          alert(message);
+        } else if (data.success && data.created_count === 0) {
+          // No mutual funds were created, but request was successful
+          let message = data.message || "No new mutual funds were added from PDF";
+          if (data.skipped_mutual_funds && data.skipped_mutual_funds.length > 0) {
+            message += `\n\nAll mutual funds were skipped because they already exist: ${data.skipped_mutual_funds.join(", ")}`;
+          }
+          alert(message);
+        } else {
+          // Request succeeded but there were errors
+          alert(data.message || "Failed to process PDF. Please check the errors and try again.");
+        }
+        // Reset loading state after successful response
+        setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
+      } else if (response.status === 504) {
+        // Clear any existing polling interval before starting a new one
+        if ((window as any).pdfUploadPollInterval) {
+          clearInterval((window as any).pdfUploadPollInterval);
+        }
+        
+        // Gateway timeout - backend may still be processing
+        // Show notification but keep loading spinner active and start polling
+        alert(data.message || "PDF processing is taking longer than expected. The processing will continue in the background. Please wait...");
+        
+        // Keep loading state active and start polling for completion
+        let pollCount = 0;
+        const maxPolls = 120; // Poll for up to 10 minutes (120 * 5 seconds)
+        let alertShown = false; // Flag to prevent multiple alerts
+        
+        const pollInterval = setInterval(async () => {
+          pollCount++;
+          try {
+            const currentCount = await getCurrentAssetCount();
+            
+            // Check if new mutual funds were added
+            if ((currentCount > initialMfCount || pollCount >= maxPolls) && !alertShown) {
+              alertShown = true; // Prevent multiple alerts
+              clearInterval(pollInterval);
+              delete (window as any).pdfUploadPollInterval;
+              
+              // Refresh assets to show the new data
+              await fetchAssets();
+              
+              setIsUploadingPdf(false);
+              setUploadingPdfAssetType("");
+              
+              if (currentCount > initialMfCount) {
+                const addedCount = currentCount - initialMfCount;
+                alert(`PDF processing completed! ${addedCount} new mutual fund(s) have been added.`);
+              } else {
+                alert("Polling timeout reached. Please check if assets were added manually.");
+              }
+            }
+          } catch (pollError) {
+            console.error("Error polling for assets:", pollError);
+            // Continue polling even if one poll fails
+            if (pollCount >= maxPolls && !alertShown) {
+              alertShown = true; // Prevent multiple alerts
+              clearInterval(pollInterval);
+              delete (window as any).pdfUploadPollInterval;
+              setIsUploadingPdf(false);
+              setUploadingPdfAssetType("");
+              alert("Polling completed. Please check if assets were added manually.");
+            }
+          }
+        }, 5000); // Poll every 5 seconds
+        
+        // Store interval ID so we can clear it if needed
+        (window as any).pdfUploadPollInterval = pollInterval;
       } else {
         alert(data.message || "Failed to process PDF. Please try again.");
+        setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error uploading PDF:", error);
-      alert("An error occurred while uploading the PDF. Please try again.");
+      // Don't show alerts for network/connection errors - backend may still be processing
+      // Only log to console to avoid false "connection failed" popups during long LLM processing
+      isNetworkError = error.name === 'TypeError' && 
+                          (error.message?.includes('fetch') || 
+                           error.message?.includes('network') ||
+                           error.message?.includes('Failed to fetch'));
+      
+      if (isNetworkError) {
+        console.log("Network error during PDF upload - backend may still be processing. Please wait...");
+        // Keep loading state active - don't reset it, let user see it's still processing
+        // Don't show alert - backend might still be working
+      } else {
+        // Only show alert for non-network errors
+        alert("An error occurred while uploading the PDF. Please try again.");
+        setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
+      }
     } finally {
-      setIsUploadingPdf(false);
-      setUploadingPdfAssetType("");
+      // Only reset loading state if it's not a network error (network errors keep loading active)
+      // and if polling is not active
+      if (!isNetworkError && !(window as any).pdfUploadPollInterval) {
+        setIsUploadingPdf(false);
+        setUploadingPdfAssetType("");
+      }
     }
   };
 
