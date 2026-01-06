@@ -341,6 +341,70 @@ async def create_asset(
                     logger = logging.getLogger(__name__)
                     logger.warning(f"Error checking for duplicate fixed deposit: {str(check_error)}")
         
+        elif asset_data.get("type") == "stock":
+            stock_symbol = asset_data.get("stock_symbol")
+            stock_name = asset_data.get("name")
+            purchase_date = asset_data.get("purchase_date")
+            
+            # Check if stock already exists in database by symbol/name (regardless of purchase date)
+            if stock_symbol or stock_name:
+                # Normalize for comparison (case-insensitive, strip whitespace)
+                normalized_symbol = str(stock_symbol).strip().lower() if stock_symbol else ""
+                normalized_name = str(stock_name).strip().lower() if stock_name else ""
+                check_symbol = normalized_symbol if normalized_symbol else normalized_name
+                
+                try:
+                    # Fetch all stocks (including NULL is_active for backward compatibility)
+                    existing_response = supabase_service.table("assets").select("id, stock_symbol, name, purchase_date, is_active").eq("user_id", user_id).eq("type", "stock").execute()
+                    all_existing_stocks = existing_response.data if existing_response.data else []
+                    # Filter to only active stocks (is_active = True or NULL)
+                    existing_stocks = [s for s in all_existing_stocks if s.get("is_active") is True or s.get("is_active") is None]
+                    
+                    for existing_stock in existing_stocks:
+                        existing_symbol = str(existing_stock.get("stock_symbol", "")).strip().lower()
+                        existing_name = str(existing_stock.get("name", "")).strip().lower()
+                        existing_date = existing_stock.get("purchase_date", "")
+                        
+                        # Check if stock with same symbol/name already exists (regardless of purchase date)
+                        existing_check_symbol = existing_symbol if existing_symbol else existing_name
+                        if check_symbol and existing_check_symbol and check_symbol == existing_check_symbol:
+                            # Fetch the complete existing asset from database
+                            existing_asset_id = existing_stock.get("id")
+                            if existing_asset_id:
+                                full_asset_response = supabase_service.table("assets").select("*").eq("id", existing_asset_id).execute()
+                                if full_asset_response.data and len(full_asset_response.data) > 0:
+                                    existing_asset = full_asset_response.data[0]
+                                    duplicate_message = f"Stock '{stock_symbol or stock_name}' was not added because it already exists in your portfolio."
+                                    # Add message and duplicate flag to the response
+                                    existing_asset["message"] = duplicate_message
+                                    existing_asset["duplicate"] = True
+                                    logger = logging.getLogger(__name__)
+                                    logger.info(f"Duplicate stock detected: {stock_symbol or stock_name}. Returning existing asset with message.")
+                                    return existing_asset
+                        
+                        # Also check by symbol + purchase date for backward compatibility
+                        if stock_symbol and purchase_date and existing_symbol and existing_date:
+                            normalized_date = str(purchase_date).strip().lower()
+                            existing_normalized_date = str(existing_date).strip().lower()
+                            if normalized_symbol == existing_symbol and normalized_date == existing_normalized_date:
+                                # Fetch the complete existing asset from database
+                                existing_asset_id = existing_stock.get("id")
+                                if existing_asset_id:
+                                    full_asset_response = supabase_service.table("assets").select("*").eq("id", existing_asset_id).execute()
+                                    if full_asset_response.data and len(full_asset_response.data) > 0:
+                                        existing_asset = full_asset_response.data[0]
+                                        duplicate_message = f"Stock with symbol '{stock_symbol}' and purchase date '{purchase_date}' was not added because it already exists in your portfolio."
+                                        # Add message and duplicate flag to the response
+                                        existing_asset["message"] = duplicate_message
+                                        existing_asset["duplicate"] = True
+                                        logger = logging.getLogger(__name__)
+                                        logger.info(f"Duplicate stock detected: {stock_symbol}, Purchase Date: {purchase_date}. Returning existing asset with message.")
+                                        return existing_asset
+                except Exception as check_error:
+                    # Log error but continue - don't block creation if check fails
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error checking for duplicate stock: {str(check_error)}")
+        
         # Use service role client for backend operations
         # We've already validated the user via JWT and set user_id correctly
         # Service role bypasses RLS, but we're enforcing security at the application level
@@ -855,6 +919,7 @@ async def upload_pdf_for_asset_type(
         errors = []
         skipped_account_numbers = []  # Track account numbers skipped due to duplicates (for bank accounts)
         skipped_fd_keys = []  # Track fixed deposits skipped due to duplicates (for fixed deposits)
+        skipped_stocks = []  # Track stocks skipped due to duplicates (for stocks)
         
         # Process fixed deposits or stocks
         if asset_type == "fixed_deposit":
@@ -939,12 +1004,24 @@ async def upload_pdf_for_asset_type(
                 logger.info("Calling LLM for fixed deposit extraction...")
                 print("Calling LLM for fixed deposit extraction...")
                 
+                # Track timing for LLM call
+                import time
+                llm_start_time = time.time()
+                logger.info(f"LLM call started at {llm_start_time}")
+                print(f"LLM call started - this may take 30-120 seconds for large PDFs...")
+                
+                # Increased max_tokens to 30000 to handle large PDFs without truncation
                 text_response = await _fixed_deposit_llm_service.chat(
                     system_prompt="<Role>You are a helpful financial assistant that extracts fixed deposit information from a document.</Role>",
                     message=instruction_prompt, 
-                    max_tokens=50000,
+                    max_tokens=30000,  # Increased to handle large responses without truncation
                     temperature=0.7
                 )
+                
+                llm_end_time = time.time()
+                llm_duration = llm_end_time - llm_start_time
+                logger.info(f"LLM call completed in {llm_duration:.2f} seconds ({llm_duration/60:.2f} minutes)")
+                print(f"LLM call completed in {llm_duration:.2f} seconds")
 
                 print(f"Text response: {text_response}")
                 logger.info(f"LLM response type: {type(text_response)}, length: {len(text_response) if text_response else 0}")
@@ -1295,7 +1372,7 @@ async def upload_pdf_for_asset_type(
                         print(f"WARNING: {error_msg}")
                         errors.append(error_msg)
                         continue
-                    
+                                
                     # Helper function to clean numeric strings
                     def clean_numeric_string(value):
                         if isinstance(value, str):
@@ -1329,7 +1406,7 @@ async def upload_pdf_for_asset_type(
                         error_msg = f"FD {fd_idx + 1}: Invalid duration value: {duration}"
                         errors.append(error_msg)
                         continue
-                    
+                                
                     # Parse start date
                     start_date = None
                     try:
@@ -1393,7 +1470,7 @@ async def upload_pdf_for_asset_type(
                     for field in decimal_fields:
                         if field in asset_dict and asset_dict[field] is not None:
                             asset_dict[field] = str(asset_dict[field])
-                    
+                                
                     # Check for duplicates before inserting
                     # Create FD key from bank name and principal amount
                     fd_key = f"{bank_name.lower().strip()}_{str(principal_amount_float).strip().lower()}"
@@ -1442,159 +1519,508 @@ async def upload_pdf_for_asset_type(
                 except Exception as e:
                     error_msg = f"FD {fd_idx + 1}: Error processing fixed deposit: {str(e)}"
                     logger.error(error_msg)
-                    print(f"ERROR: {error_msg}")
                     import traceback
                     logger.error(traceback.format_exc())
+                    print(f"ERROR: {error_msg}")
                     errors.append(error_msg)
         
         elif asset_type == "stock":
+            logger = logging.getLogger(__name__)
+            logger.info("=== STOCK PROCESSING STARTED ===")
+            print("=== STOCK PROCESSING STARTED ===")
+            
             if not _stock_llm_service.api_key:
+                logger.error("GEMINI_API_KEY not found")
+                print("ERROR: GEMINI_API_KEY not found")
                 raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
             
-            # Process each page
-            # Store context from previous pages (input and output pairs)
-            previous_contexts = []
+            logger.info("API key found, proceeding with stock extraction")
+            print("API key found, proceeding with stock extraction")
             
-            for page_idx, page_content in enumerate(pdf_pages):
-                if not page_content or not page_content.strip():
-                    continue
+            # Fetch family members for the user
+            logger.info("Fetching family members...")
+            print("Fetching family members...")
+            family_members_list = []
+            try:
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members_list = family_members_response.data if family_members_response.data else []
+                logger.info(f"Found {len(family_members_list)} family members")
+                print(f"Found {len(family_members_list)} family members")
+            except Exception as e:
+                logger.warning(f"Failed to fetch family members: {str(e)}")
+                print(f"Warning: Failed to fetch family members: {str(e)}")
+            
+            # Format family members for the prompt and create mapping
+            family_members_text = ""
+            family_members_map = {}
+            if family_members_list:
+                family_members_lines = []
+                for fm in family_members_list:
+                    name = fm.get("name", "")
+                    relationship = fm.get("relationship", "")
+                    notes = fm.get("notes", "")
+                    fm_id = fm.get("id", "")
+                    if name:
+                        line = f"- Name: {name}, Relationship: {relationship}"
+                        if notes:
+                            line += f", Notes: {notes}"
+                        family_members_lines.append(line)
+                        # Create mapping for owner name matching
+                        if fm_id:
+                            family_members_map[name.lower()] = str(fm_id)
+                if family_members_lines:
+                    family_members_text = "\n".join(family_members_lines)
+            
+            logger.info(f"Family members formatted. Text length: {len(family_members_text)}")
+            print(f"Family members formatted. Text length: {len(family_members_text)}")
+            
+            # Combine all PDF pages into a single document
+            complete_pdf_content = "\n\n--- Page Separator ---\n\n".join(pdf_pages)
+            logger.info(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
+            print(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
+            logger.info(f"Starting stock extraction. PDF has {len(pdf_pages)} pages")
+            print(f"Starting stock extraction. PDF has {len(pdf_pages)} pages")
+            
+            # Process the complete PDF document
+            all_stocks = []
+            
+            try:
+                # Load prompt from file and replace placeholders with actual content
+                logger.info("Loading prompt from file...")
+                print("Loading prompt from file...")
+                prompt_template = load_prompt("stocks_prompt.txt")
+                logger.info("Prompt loaded successfully")
+                print("Prompt loaded successfully")
                 
+                logger.info("Formatting prompt with PDF content and family members...")
+                print("Formatting prompt...")
+                instruction_prompt = prompt_template.format(
+                    page=complete_pdf_content,
+                    family_members=family_members_text if family_members_text else "No family members have been added yet."
+                )
+                logger.info(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                print(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                
+                # Use chat function from LLMService - LLM will return a JSON object/array
+                logger.info("Calling LLM for stock extraction...")
+                print("Calling LLM for stock extraction...")
+                logger.info("WAITING for LLM response - blocking until complete...")
+                print("WAITING for LLM response - blocking until complete...")
+                logger.info("NOTE: Other requests may be processed concurrently while waiting for LLM (this is normal async behavior)")
+                
+                # Track timing for LLM call
+                import time
+                llm_start_time = time.time()
+                logger.info(f"LLM call started at {llm_start_time}")
+                print(f"LLM call started - this may take 30-120 seconds for large PDFs...")
+                
+                # Explicitly await the LLM response - this will block THIS request until the response is received
+                # Note: FastAPI can still process other requests concurrently because run_in_executor yields to event loop
+                # Increased max_tokens to 30000 to handle large PDFs (prompt is ~22k tokens, need room for response)
+                # The prompt itself is large, so we need sufficient tokens for the response
+                text_response = await _stock_llm_service.chat(
+                    system_prompt="<Role>You are a helpful financial assistant that extracts stock/equity information from a document.</Role>",
+                    message=instruction_prompt,
+                    max_tokens=60000,  # Increased to handle large responses without truncation
+                    temperature=0.7
+                )
+                
+                llm_end_time = time.time()
+                llm_duration = llm_end_time - llm_start_time
+                logger.info(f"LLM call completed in {llm_duration:.2f} seconds ({llm_duration/60:.2f} minutes)")
+                print(f"LLM call completed in {llm_duration:.2f} seconds")
+                
+                # Ensure we have a response before proceeding
+                logger.info("LLM response received - proceeding with processing...")
+                print("LLM response received - proceeding with processing...")
+                print(f"Text response: {text_response}")
+                logger.info(f"LLM response type: {type(text_response)}, length: {len(text_response) if text_response else 0}")
+                
+                if not text_response:
+                    errors.append("No response from LLM")
+                    logger.error("LLM returned empty response")
+                elif text_response.startswith("Error:"):
+                    errors.append(f"LLM returned error: {text_response}")
+                    logger.error(f"LLM error: {text_response}")
+                    # Check for specific LLM service errors
+                    error_lower = text_response.lower()
+                    if ("503" in text_response or "unavailable" in error_lower or 
+                        "overloaded" in error_lower or "service unavailable" in error_lower):
+                        message = f"Failed to extract assets from PDF: The AI service is temporarily unavailable. Please try again in a few moments. Details: {text_response}"
+                    else:
+                        message = f"Failed to extract assets from PDF due to an AI processing error. Details: {text_response}"
+                    return {
+                        "success": False,
+                        "created_count": 0,
+                        "created_assets": [],
+                        "errors": errors,
+                        "message": message,
+                        "skipped_account_numbers": [],
+                        "skipped_fixed_deposits": [],
+                        "skipped_stocks": []
+                    }
+                else:
+                    # Parse JSON response - LLM returns a JSON object or array
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = clean_json_response(text_response)
+                        
+                        print(f"Cleaned response: {cleaned_response}")
+                        
+                        # Check if response looks complete (should end with ] or })
+                        if not (cleaned_response.rstrip().endswith(']') or cleaned_response.rstrip().endswith('}')):
+                            logger.warning("Response may be incomplete - doesn't end with ] or }")
+                            print("WARNING: Response may be incomplete")
+                        
+                        # Parse the JSON response
+                        logger.info("Parsing JSON...")
+                        print("Parsing JSON...")
+                        stock_obj = json.loads(cleaned_response)
+                        logger.info(f"JSON parsed successfully. Type: {type(stock_obj).__name__}")
+                        print(f"JSON parsed successfully. Type: {type(stock_obj).__name__}")
+                        
+                        # Handle different response formats
+                        if isinstance(stock_obj, list):
+                            logger.info(f"Processing list with {len(stock_obj)} items")
+                            print(f"Processing list with {len(stock_obj)} items")
+                            for idx, item in enumerate(stock_obj):
+                                logger.info(f"Processing item {idx + 1}: {item}")
+                                print(f"Processing item {idx + 1}: {item}")
+                                if item and isinstance(item, dict) and len(item) > 0:
+                                    # Check if it has required fields
+                                    if item.get("Stock/Equity Name") or item.get("Stock Symbol"):
+                                        all_stocks.append(item)
+                                        logger.info(f"Added stock from list: {item.get('Stock/Equity Name', 'Unknown')}")
+                                        print(f"Added stock from list: {item.get('Stock/Equity Name', 'Unknown')}")
+                        elif isinstance(stock_obj, dict):
+                            # If it's a single object, check if it's empty
+                            if len(stock_obj) > 0:
+                                if stock_obj.get("Stock/Equity Name") or stock_obj.get("Stock Symbol"):
+                                    all_stocks.append(stock_obj)
+                                    logger.info(f"Added stock: {stock_obj.get('Stock/Equity Name', 'Unknown')}")
+                                    print(f"Added stock: {stock_obj.get('Stock/Equity Name', 'Unknown')}")
+                        
+                        logger.info(f"Total stocks collected: {len(all_stocks)}")
+                        print(f"Total stocks collected: {len(all_stocks)}")
+                        
+                    except json.JSONDecodeError as e:
+                        error_msg = f"Invalid JSON response from LLM: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"JSON decode error: {error_msg}")
+                        logger.error(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+                        logger.error(f"Raw response (first 500 chars): {text_response[:500]}")
+                        print(f"ERROR: JSON decode failed. Error: {str(e)}")
+                        print(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+                        
+                        # Try to extract JSON from the response if it's partially valid
+                        try:
+                            # First, try to find the first complete JSON array
+                            json_start = cleaned_response.find('[')
+                            if json_start != -1:
+                                json_substring = cleaned_response[json_start:]
+                                bracket_count = 0
+                                in_string = False
+                                escape_next = False
+                                array_end = -1
+                                
+                                for i, char in enumerate(json_substring):
+                                    if escape_next: escape_next = False; continue
+                                    if char == '\\': escape_next = True; continue
+                                    if char == '"' and not escape_next: in_string = not in_string; continue
+                                    if not in_string:
+                                        if char == '[': bracket_count += 1
+                                        elif char == ']':
+                                            bracket_count -= 1
+                                            if bracket_count == 0: array_end = i + 1; break
+                                
+                                if array_end > 0:
+                                    first_array = json_substring[:array_end]
+                                    stock_obj = json.loads(first_array)
+                                    if isinstance(stock_obj, list):
+                                        all_stocks.extend([item for item in stock_obj if item and isinstance(item, dict)])
+                                    elif isinstance(stock_obj, dict):
+                                        all_stocks.append(stock_obj)
+                            else:
+                                logger.warning("Could not find any JSON array or object start in response")
+                                print("WARNING: Could not find any JSON array or object start in response")
+                        except Exception as fix_error:
+                            logger.error(f"Failed to extract valid JSON from partial response: {str(fix_error)}")
+                            print(f"Failed to extract valid JSON: {str(fix_error)}")
+                    except Exception as e:
+                        errors.append(f"Error parsing response: {str(e)}")
+                        logger.error(f"Parse error: {str(e)}")
+            
+            except Exception as e:
+                error_msg = f"Error during stock extraction: {str(e)}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error(error_trace)
+                print(f"Traceback: {error_trace}")
+            
+            # Ensure LLM processing is complete before proceeding with deduplication
+            logger.info("LLM processing complete. Proceeding with stock deduplication and database insertion...")
+            print("LLM processing complete. Proceeding with stock deduplication and database insertion...")
+            
+            # Remove duplicates based on stock symbol/name (keep first occurrence)
+            logger.info(f"Before deduplication: {len(all_stocks)} stocks")
+            print(f"Before deduplication: {len(all_stocks)} stocks")
+            seen_stock_symbols = set()  # Track by symbol/name
+            seen_stock_keys = set()  # Also track by symbol + purchase date for backward compatibility
+            unique_stocks = []
+            for stock in all_stocks:
+                stock_symbol = stock.get("Stock Symbol") or stock.get("stock_symbol") or stock.get("Symbol") or ""
+                stock_name = stock.get("Stock/Equity Name") or stock.get("Stock Name") or stock.get("Equity Name") or stock.get("stock_name") or stock.get("name") or ""
+                purchase_date = stock.get("Purchase Date") or stock.get("purchase_date") or "1900-01-01"
+                
+                # Create a unique key from symbol/name (primary check)
+                check_symbol = stock_symbol.lower().strip() if stock_symbol else (stock_name.lower().strip() if stock_name else "")
+                
+                # Also create key from symbol + purchase date for backward compatibility
+                stock_key = f"{stock_symbol.lower().strip()}_{purchase_date.strip().lower()}" if stock_symbol and purchase_date else ""
+                
+                is_duplicate = False
+                
+                # Check by symbol/name first (regardless of purchase date)
+                if check_symbol:
+                    if check_symbol in seen_stock_symbols:
+                        logger.info(f"Skipping duplicate stock: {stock_symbol or stock_name}")
+                        print(f"Skipping duplicate stock: {stock_symbol or stock_name}")
+                        is_duplicate = True
+                    else:
+                        seen_stock_symbols.add(check_symbol)
+                
+                # Also check by symbol + purchase date for backward compatibility
+                if not is_duplicate and stock_key:
+                    if stock_key in seen_stock_keys:
+                        logger.info(f"Skipping duplicate stock: {stock_symbol}, Purchase Date: {purchase_date}")
+                        print(f"Skipping duplicate stock: {stock_symbol}, Purchase Date: {purchase_date}")
+                        is_duplicate = True
+                    else:
+                        seen_stock_keys.add(stock_key)
+                
+                if not is_duplicate:
+                    unique_stocks.append(stock)
+                # If no symbol or name, keep it (shouldn't happen based on validation)
+                elif not check_symbol:
+                    unique_stocks.append(stock)
+            
+            all_stocks = unique_stocks
+            logger.info(f"After deduplication: {len(all_stocks)} unique stocks")
+            print(f"After deduplication: {len(all_stocks)} unique stocks")
+            
+            # Fetch existing stocks from database to check for duplicates
+            existing_stocks = []
+            existing_stock_symbols = set()  # Track existing stock symbols (or names if symbol not available)
+            existing_stock_keys = set()  # Track existing stock keys (symbol + purchase_date) for backward compatibility
+            try:
+                logger.info("Fetching existing stocks from database...")
+                print("Fetching existing stocks from database...")
+                existing_assets_response = supabase_service.table("assets").select("stock_symbol, name, purchase_date").eq("user_id", user_id).eq("type", "stock").execute()
+                all_existing_stocks = existing_assets_response.data if existing_assets_response.data else []
+                # Filter to only active stocks (is_active = True or NULL)
+                existing_stocks = [s for s in all_existing_stocks if s.get("is_active") is True or s.get("is_active") is None]
+                
+                # Create set of existing stock symbols/names and keys
+                for existing_stock in existing_stocks:
+                    existing_symbol = existing_stock.get("stock_symbol", "")
+                    existing_name = existing_stock.get("name", "")
+                    existing_date = existing_stock.get("purchase_date", "")
+                    
+                    # Add to symbol/name set (use symbol if available, otherwise use name)
+                    if existing_symbol:
+                        existing_stock_symbols.add(existing_symbol.lower().strip())
+                    elif existing_name:
+                        existing_stock_symbols.add(existing_name.lower().strip())
+                    
+                    # Also track symbol + purchase_date for backward compatibility
+                    if existing_symbol and existing_date:
+                        existing_key = f"{existing_symbol.lower().strip()}_{existing_date.strip().lower()}"
+                        existing_stock_keys.add(existing_key)
+                
+                logger.info(f"Found {len(existing_stocks)} existing active stocks in database")
+                print(f"Found {len(existing_stocks)} existing active stocks in database")
+            except Exception as e:
+                logger.error(f"Error fetching existing stocks for duplicate check: {str(e)}")
+                pass
+            
+            # Process all collected stocks for database insertion
+            skipped_stocks = []
+            logger.info(f"Starting to process {len(all_stocks)} stocks for database insertion")
+            print(f"Starting to process {len(all_stocks)} stocks for database insertion")
+            
+            for stock_idx, stock_data in enumerate(all_stocks):
                 try:
-                    # Load prompt from file
-                    instruction_prompt = load_prompt("stocks_prompt.txt")
+                    logger.info(f"Processing stock {stock_idx + 1}/{len(all_stocks)}")
+                    print(f"Processing stock {stock_idx + 1}/{len(all_stocks)}")
                     
-                    # Build contents list using helper function
-                    contents = build_contents_list(instruction_prompt, previous_contexts, page_content, page_idx, "stock")
+                    # Get currency from market
+                    asset_market = market or "india"
+                    currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
                     
-                    # Call Gemini with JSON mode using LLMService
-                    text_response = await _stock_llm_service.generate_json(contents)
+                    # Extract and validate fields (handle multiple possible key names)
+                    stock_name = stock_data.get("Stock/Equity Name") or stock_data.get("Stock Name") or stock_data.get("Equity Name") or stock_data.get("stock_name") or stock_data.get("name")
+                    stock_symbol = stock_data.get("Stock Symbol") or stock_data.get("stock_symbol") or stock_data.get("Symbol") or stock_data.get("symbol")
+                    # Average Price = purchase price (the price at which shares were bought)
+                    average_price = stock_data.get("Average Price") or stock_data.get("Avg. Price") or stock_data.get("avg_price") or stock_data.get("Purchase Price") or stock_data.get("purchase_price")
+                    # Current Price = current market price
+                    current_price = stock_data.get("Current Price") or stock_data.get("Price") or stock_data.get("current_price") or stock_data.get("Market Price") or stock_data.get("market_price")
+                    quantity = stock_data.get("Quantity") or stock_data.get("Shares") or stock_data.get("Number of Shares") or stock_data.get("quantity")
+                    purchase_date_str = stock_data.get("Purchase Date") or stock_data.get("purchase_date")
+                    # Value at Cost = total amount invested (Average Price * Quantity)
+                    value_at_cost = stock_data.get("Value at Cost") or stock_data.get("value_at_cost") or stock_data.get("Amount Invested") or stock_data.get("Total Invested") or stock_data.get("Investment Amount") or stock_data.get("amount_invested")
+                    current_value = stock_data.get("Current Value") or stock_data.get("Current Worth") or stock_data.get("Market Value") or stock_data.get("current_value")
+                    owner_name = stock_data.get("Owner Name") or stock_data.get("owner_name") or "self"
                     
-                    if not text_response:
-                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                    # Use stock name as symbol if symbol is not provided
+                    if not stock_symbol and stock_name:
+                        stock_symbol = stock_name
+                    
+                    # Skip if this looks like a mutual fund (has "Scheme" or "NAV" or "Units" but no stock-like fields)
+                    if (stock_data.get("Scheme") or stock_data.get("NAV") or stock_data.get("nav")) and not stock_name:
                         continue
                     
-                    # Parse JSON response using helper function
-                    try:
-                        stocks, cleaned_response = clean_and_parse_json_response(text_response)
-                        
-                        # Store input and output for future context (for pages after the first)
-                        previous_contexts.append((page_content, cleaned_response))
-                        
-                        # Skip if empty array (no stocks on this page)
-                        if len(stocks) == 0:
-                            continue
-                        
-                        # Process each stock
-                        for stock_idx, stock_data in enumerate(stocks):
+                    # Validate required fields (name, symbol, average_price, current_price, quantity, value_at_cost are mandatory; purchase_date can be defaulted)
+                    if not stock_name or not stock_symbol or not average_price or not current_price or not quantity or not value_at_cost:
+                        error_msg = f"Stock {stock_idx + 1}: Missing required fields (name, symbol, average_price, current_price, quantity, or value_at_cost). Data: {stock_data}"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        continue
+                    
+                    # Use default date if purchase_date is not provided
+                    if not purchase_date_str or purchase_date_str == "1900-01-01":
+                        purchase_date_str = "1900-01-01"  # Default placeholder date
+                    
+                    # Parse purchase date (handle default placeholder)
+                    purchase_date = None
+                    if purchase_date_str and purchase_date_str != "1900-01-01":
+                        try:
+                            purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
+                        except:
                             try:
-                                # Get currency from market
-                                asset_market = market or "india"
-                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
-                                
-                                # Extract and validate fields (handle multiple possible key names)
-                                stock_name = stock_data.get("Stock/Equity Name") or stock_data.get("Stock Name") or stock_data.get("Equity Name") or stock_data.get("stock_name") or stock_data.get("name")
-                                stock_symbol = stock_data.get("Stock Symbol") or stock_data.get("stock_symbol") or stock_data.get("Symbol") or stock_data.get("symbol")
-                                # Average Price = purchase price (the price at which shares were bought)
-                                average_price = stock_data.get("Average Price") or stock_data.get("Avg. Price") or stock_data.get("avg_price") or stock_data.get("Purchase Price") or stock_data.get("purchase_price")
-                                # Current Price = current market price
-                                current_price = stock_data.get("Current Price") or stock_data.get("Price") or stock_data.get("current_price") or stock_data.get("Market Price") or stock_data.get("market_price")
-                                quantity = stock_data.get("Quantity") or stock_data.get("Shares") or stock_data.get("Number of Shares") or stock_data.get("quantity")
-                                purchase_date_str = stock_data.get("Purchase Date") or stock_data.get("purchase_date")
-                                # Value at Cost = total amount invested (Average Price * Quantity)
-                                value_at_cost = stock_data.get("Value at Cost") or stock_data.get("value_at_cost") or stock_data.get("Amount Invested") or stock_data.get("Total Invested") or stock_data.get("Investment Amount") or stock_data.get("amount_invested")
-                                current_value = stock_data.get("Current Value") or stock_data.get("Current Worth") or stock_data.get("Market Value") or stock_data.get("current_value")
-                                owner_name = stock_data.get("Owner Name") or stock_data.get("owner_name") or "self"
-                                
-                                # Use stock name as symbol if symbol is not provided
-                                if not stock_symbol and stock_name:
-                                    stock_symbol = stock_name
-                                
-                                # Skip if this looks like a mutual fund (has "Scheme" or "NAV" or "Units" but no stock-like fields)
-                                if (stock_data.get("Scheme") or stock_data.get("NAV") or stock_data.get("nav")) and not stock_name:
-                                    continue
-                                
-                                # Validate required fields (name, symbol, average_price, current_price, quantity, value_at_cost are mandatory; purchase_date can be defaulted)
-                                if not stock_name or not stock_symbol or not average_price or not current_price or not quantity or not value_at_cost:
-                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Missing required fields (name, symbol, average_price, current_price, quantity, or value_at_cost). Data: {stock_data}"
-                                    errors.append(error_msg)
-                                    continue
-                                
-                                # Use default date if purchase_date is not provided
-                                if not purchase_date_str or purchase_date_str == "1900-01-01":
-                                    purchase_date_str = "1900-01-01"  # Default placeholder date
-                                
-                                # Parse purchase date (handle default placeholder)
-                                purchase_date = None
-                                if purchase_date_str and purchase_date_str != "1900-01-01":
-                                    try:
-                                        purchase_date = datetime.strptime(purchase_date_str, "%Y-%m-%d").date()
-                                    except:
-                                        try:
-                                            purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
-                                        except:
-                                            try:
-                                                purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
-                                            except:
-                                                purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
-                                else:
-                                    # Use default placeholder date
-                                    purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
-                                
-                                # Helper function to clean numeric strings (remove commas, spaces)
-                                def clean_numeric_string(value):
-                                    if isinstance(value, str):
-                                        # Remove commas, spaces, and other non-numeric characters except decimal point
-                                        cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
-                                        return cleaned
-                                    return str(value)
-                                
-                                # Convert to float (clean numeric strings first to handle commas)
+                                purchase_date = datetime.strptime(purchase_date_str, "%d-%m-%Y").date()
+                            except:
                                 try:
-                                    average_price_cleaned = clean_numeric_string(average_price)
-                                    current_price_cleaned = clean_numeric_string(current_price)
-                                    quantity_cleaned = clean_numeric_string(quantity)
-                                    value_at_cost_cleaned = clean_numeric_string(value_at_cost)
-                                    
-                                    average_price_float = float(average_price_cleaned)
-                                    current_price_float = float(current_price_cleaned)
-                                    quantity_float = float(quantity_cleaned)
-                                    value_at_cost_float = float(value_at_cost_cleaned)
-                                except (ValueError, TypeError) as e:
-                                    error_msg = f"Page {page_idx + 1}, Stock {stock_idx + 1}: Invalid numeric values - avg_price: {average_price}, current_price: {current_price}, quantity: {quantity}, value_at_cost: {value_at_cost}"
-                                    errors.append(error_msg)
-                                    continue
+                                    purchase_date = datetime.strptime(purchase_date_str, "%d/%m/%Y").date()
+                                except:
+                                    purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
+                    else:
+                        # Use default placeholder date
+                        purchase_date = datetime.strptime("1900-01-01", "%Y-%m-%d").date()
+                    
+                    # Helper function to clean numeric strings (remove commas, spaces)
+                    def clean_numeric_string(value):
+                        if isinstance(value, str):
+                            # Remove commas, spaces, and other non-numeric characters except decimal point
+                            cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '')
+                            return cleaned
+                        return str(value)
+                    
+                    # Convert to float (clean numeric strings first to handle commas)
+                    try:
+                        average_price_cleaned = clean_numeric_string(average_price)
+                        current_price_cleaned = clean_numeric_string(current_price)
+                        quantity_cleaned = clean_numeric_string(quantity)
+                        value_at_cost_cleaned = clean_numeric_string(value_at_cost)
+                        
+                        average_price_float = float(average_price_cleaned)
+                        current_price_float = float(current_price_cleaned)
+                        quantity_float = float(quantity_cleaned)
+                        value_at_cost_float = float(value_at_cost_cleaned)
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"Stock {stock_idx + 1}: Invalid numeric values - avg_price: {average_price}, current_price: {current_price}, quantity: {quantity}, value_at_cost: {value_at_cost}"
+                        errors.append(error_msg)
+                        logger.warning(error_msg)
+                        continue
+                    
+                    # Note: We use the extracted value_at_cost directly - no validation against calculation
+                    # The LLM should extract this value directly from the document, not calculate it
+                    
+                    # Extract current_value directly from document (do not calculate)
+                    if current_value:
+                        try:
+                            current_value_cleaned = clean_numeric_string(current_value)
+                            current_value_float = float(current_value_cleaned)
+                        except (ValueError, TypeError):
+                            # If current_value cannot be parsed, log error but don't calculate
+                            current_value_float = 0.0
+                    else:
+                        # If not provided in document, set to 0 (do not calculate)
+                        current_value_float = 0.0
+                    
+                    # Map owner name to family member ID
+                    family_member_id = None
+                    owner_name_lower = owner_name.lower().strip()
+                    if owner_name_lower in ["self", "me", "myself", ""]:
+                        family_member_id = None
+                    elif owner_name_lower in family_members_map:
+                        family_member_id = family_members_map[owner_name_lower]
+                    else:
+                        # Try partial match
+                        for fm_name, fm_id in family_members_map.items():
+                            if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                family_member_id = fm_id
+                                break
                                 
-                                # Note: We use the extracted value_at_cost directly - no validation against calculation
-                                # The LLM should extract this value directly from the document, not calculate it
+                    # Check for duplicates before inserting
+                    # Check by stock symbol (or name if symbol not available) - prevent duplicate stocks regardless of purchase date
+                    normalized_symbol = stock_symbol.lower().strip() if stock_symbol else ""
+                    normalized_name = stock_name.lower().strip() if stock_name else ""
+                    
+                    # Also create stock key from symbol and purchase date for backward compatibility
+                    normalized_date = purchase_date.isoformat().strip().lower()
+                    current_stock_key = f"{normalized_symbol}_{normalized_date}" if normalized_symbol else ""
+                    
+                    is_duplicate = False
+                    
+                    # First check: If stock symbol/name already exists (regardless of purchase date)
+                    check_symbol = normalized_symbol if normalized_symbol else normalized_name
+                    if check_symbol and check_symbol in existing_stock_symbols:
+                        logger.info(f"Skipping stock - already exists in database: {stock_symbol or stock_name}")
+                        print(f"Skipping stock - already exists in database: {stock_symbol or stock_name}")
+                        skipped_stocks.append(f"{stock_symbol or stock_name}")
+                        is_duplicate = True
+                    
+                    # Also check by symbol + purchase date for backward compatibility
+                    if not is_duplicate and current_stock_key and current_stock_key in existing_stock_keys:
+                        logger.info(f"Skipping stock - already exists in database: {stock_symbol} (Purchase Date: {purchase_date.isoformat()})")
+                        print(f"Skipping stock - already exists in database: {stock_symbol} (Purchase Date: {purchase_date.isoformat()})")
+                        skipped_stocks.append(f"{stock_symbol} (Purchase Date: {purchase_date.isoformat()})")
+                        is_duplicate = True
+                    
+                    # Check against newly created assets in this session
+                    if not is_duplicate:
+                        for created_asset in created_assets:
+                            if created_asset.get("type") == "stock":
+                                created_symbol = str(created_asset.get("stock_symbol", "")).strip().lower()
+                                created_name = str(created_asset.get("name", "")).strip().lower()
                                 
-                                # Extract current_value directly from document (do not calculate)
-                                if current_value:
-                                    try:
-                                        current_value_cleaned = clean_numeric_string(current_value)
-                                        current_value_float = float(current_value_cleaned)
-                                    except (ValueError, TypeError):
-                                        # If current_value cannot be parsed, log error but don't calculate
-                                        current_value_float = 0.0
-                                else:
-                                    # If not provided in document, set to 0 (do not calculate)
-                                    current_value_float = 0.0
+                                # Check by symbol/name
+                                if check_symbol:
+                                    if (created_symbol and check_symbol == created_symbol) or (created_name and check_symbol == created_name):
+                                        logger.info(f"Skipping stock - already added in this session: {stock_symbol or stock_name}")
+                                        if (stock_symbol or stock_name) not in skipped_stocks:
+                                            skipped_stocks.append(f"{stock_symbol or stock_name}")
+                                        is_duplicate = True
+                                        break
                                 
-                                # Map owner name to family member ID
-                                family_member_id = None
-                                owner_name_lower = owner_name.lower().strip()
-                                if owner_name_lower in ["self", "me", "myself", ""]:
-                                    family_member_id = None
-                                elif owner_name_lower in family_members_map:
-                                    family_member_id = family_members_map[owner_name_lower]
-                                else:
-                                    # Try partial match
-                                    for fm_name, fm_id in family_members_map.items():
-                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
-                                            family_member_id = fm_id
-                                            break
-                                
-                                # Build asset data
-                                asset_data = {
+                                # Also check by symbol + purchase date
+                                created_date = created_asset.get("purchase_date", "")
+                                if created_symbol and created_date and current_stock_key:
+                                    created_key = f"{created_symbol}_{str(created_date).strip().lower()}"
+                                    if current_stock_key == created_key:
+                                        logger.info(f"Skipping stock - already added in this session: {stock_symbol} (Purchase Date: {purchase_date.isoformat()})")
+                                        if f"{stock_symbol} (Purchase Date: {purchase_date.isoformat()})" not in skipped_stocks:
+                                            skipped_stocks.append(f"{stock_symbol} (Purchase Date: {purchase_date.isoformat()})")
+                                        is_duplicate = True
+                                        break
+                    
+                    if is_duplicate:
+                        continue
+                    
+                    # Build asset data
+                    asset_data = {
                                     "name": stock_name,
                                     "type": "stock",
                                     "currency": currency,
@@ -1606,48 +2032,49 @@ async def upload_pdf_for_asset_type(
                                     "current_value": current_value_float,  # Current market value
                                     "is_active": True,
                                     "family_member_id": family_member_id
-                                }
-                                
-                                # Create AssetCreate object
-                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
-                                asset_create.model_validate_asset_fields()
-                                
-                                # Convert to dict
-                                try:
-                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
-                                except AttributeError:
-                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
-                                
-                                asset_dict["user_id"] = user_id
-                                
-                                # Convert decimals to strings
-                                decimal_fields = ['quantity', 'purchase_price', 'current_price', 'current_value']
-                                for field in decimal_fields:
-                                    if field in asset_dict and asset_dict[field] is not None:
-                                        asset_dict[field] = str(asset_dict[field])
-                                
-                                # Insert into database
-                                response = supabase_service.table("assets").insert(asset_dict).execute()
-                                if response.data and len(response.data) > 0:
-                                    created_assets.append(response.data[0])
-                                else:
-                                    error_msg = f"Page {page_idx + 1}: Failed to create stock: {stock_name}"
-                                    errors.append(error_msg)
-                                    
-                            except Exception as e:
-                                errors.append(f"Page {page_idx + 1}: Error processing stock: {str(e)}")
+                    }
                     
-                    except json.JSONDecodeError as e:
-                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
-                    except Exception as e:
-                        errors.append(f"Page {page_idx + 1}: {str(e)}")
-                
+                    # Create AssetCreate object
+                    asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                    asset_create.model_validate_asset_fields()
+                    
+                    # Convert to dict
+                    try:
+                        asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                    except AttributeError:
+                        asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                    
+                    asset_dict["user_id"] = user_id
+                    
+                    # Convert decimals to strings
+                    decimal_fields = ['quantity', 'purchase_price', 'current_price', 'current_value']
+                    for field in decimal_fields:
+                        if field in asset_dict and asset_dict[field] is not None:
+                            asset_dict[field] = str(asset_dict[field])
+                    
+                    # Insert into database
+                    logger.info(f"Inserting stock into database: {stock_name} ({stock_symbol})")
+                    print(f"Inserting stock into database: {stock_name} ({stock_symbol})")
+                    response = supabase_service.table("assets").insert(asset_dict).execute()
+                    if response.data and len(response.data) > 0:
+                        created_assets.append(response.data[0])
+                        logger.info(f"Successfully created stock: {stock_name} ({stock_symbol})")
+                        print(f"Successfully created stock: {stock_name} ({stock_symbol})")
+                    else:
+                        error_msg = f"Failed to create stock: {stock_name}"
+                        logger.error(error_msg)
+                        print(f"ERROR: {error_msg}")
+                        errors.append(error_msg)
+                        
                 except Exception as e:
-                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
-                
-                # Add 5-second delay after processing each page to prevent LLM overload
-                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
-                    await asyncio.sleep(5)
+                    error_msg = f"Stock {stock_idx + 1}: Error processing stock: {str(e)}"
+                    logger.error(error_msg)
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    print(f"ERROR: {error_msg}")
+                    errors.append(error_msg)
+                    logger.error(traceback.format_exc())
+                    print(f"ERROR: {error_msg}")
         
         elif asset_type == "bank_account":
             logger = logging.getLogger(__name__)
@@ -1908,7 +2335,7 @@ async def upload_pdf_for_asset_type(
                         error_msg = f"BA {ba_idx + 1}: Missing required fields (bank_name, current_balance, or account_number)"
                         errors.append(error_msg)
                         continue
-                    
+                                
                     # Helper function to clean numeric strings (remove commas, spaces, currency symbols)
                     def clean_numeric_string(value):
                         if isinstance(value, str):
@@ -1991,13 +2418,13 @@ async def upload_pdf_for_asset_type(
                                 # Match by account number (normalized)
                                 if account_number and created_account_number:
                                     created_normalized = str(created_account_number).strip().lower()
-                            if normalized_account_number == created_normalized:
-                                logger.info(f"Skipping bank account - duplicate in current session: {account_number}")
-                                print(f"Skipping bank account - duplicate in current session: {account_number}")
-                                if account_number not in skipped_account_numbers:
-                                    skipped_account_numbers.append(account_number)
-                                is_duplicate = True
-                                break
+                                    if normalized_account_number == created_normalized:
+                                        logger.info(f"Skipping bank account - duplicate in current session: {account_number}")
+                                        print(f"Skipping bank account - duplicate in current session: {account_number}")
+                                        if account_number not in skipped_account_numbers:
+                                            skipped_account_numbers.append(account_number)
+                                        is_duplicate = True
+                                        break
                     
                     if is_duplicate:
                         continue
@@ -2019,9 +2446,10 @@ async def upload_pdf_for_asset_type(
                 except Exception as e:
                     error_msg = f"BA {ba_idx + 1}: Error processing bank account: {str(e)}"
                     logger.error(error_msg)
-                    print(f"ERROR: {error_msg}")
                     import traceback
                     logger.error(traceback.format_exc())
+                    print(f"ERROR: {error_msg}")
+                    errors.append(error_msg)
                     errors.append(error_msg)
         
         elif asset_type == "mutual_fund":
@@ -2311,6 +2739,12 @@ async def upload_pdf_for_asset_type(
                 message = f"Successfully added {len(created_assets)} fixed deposit(s) from PDF. {skipped_msg}"
             else:
                 message = f"No new fixed deposits were added. {skipped_msg}"
+        elif asset_type == "stock" and skipped_stocks:
+            skipped_msg = f"Stock(s) with the following details were not added because they already exist in your portfolio: {', '.join(skipped_stocks)}"
+            if created_assets:
+                message = f"Successfully added {len(created_assets)} stock(s) from PDF. {skipped_msg}"
+            else:
+                message = f"No new stocks were added. {skipped_msg}"
         elif created_assets:
             message = f"Successfully added {len(created_assets)} {asset_type}(s) from PDF"
         else:
@@ -2333,7 +2767,8 @@ async def upload_pdf_for_asset_type(
             "errors": errors,
             "message": message,
             "skipped_account_numbers": skipped_account_numbers if asset_type == "bank_account" else [],
-            "skipped_fixed_deposits": skipped_fd_keys if asset_type == "fixed_deposit" else []
+            "skipped_fixed_deposits": skipped_fd_keys if asset_type == "fixed_deposit" else [],
+            "skipped_stocks": skipped_stocks if asset_type == "stock" else []
         }
     
     except HTTPException:

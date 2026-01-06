@@ -406,11 +406,13 @@ export default function ChatWindow({ context = "assets", onAssetCreated }: ChatW
       
       if (error instanceof Error) {
         errorMessage = error.message;
-        // Provide more helpful error messages
-        if (error.message.includes("Cannot connect") || error.message.includes("Failed to fetch")) {
-          errorMessage = "Cannot connect to the backend server. Please ensure the backend is running on http://localhost:8000";
-        } else if (error.message.includes("Not authenticated")) {
+        // Don't show "backend not running" messages - backend may still be processing
+        // Only show specific error messages for authentication issues
+        if (error.message.includes("Not authenticated")) {
           errorMessage = "Your session has expired. Please log in again.";
+        } else if (error.message.includes("Cannot connect") || error.message.includes("Failed to fetch")) {
+          // Don't show connection error - backend may still be processing long requests
+          errorMessage = "Request is taking longer than expected. Please wait - processing may still be in progress.";
         }
       }
       

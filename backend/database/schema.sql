@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS assets (
     currency VARCHAR(3) DEFAULT 'USD',
     
     -- Stock-specific fields (NULL for other types)
-    stock_symbol VARCHAR(20),  -- e.g., "AAPL", "GOOGL"
+    stock_symbol VARCHAR(255),  -- e.g., "AAPL", "GOOGL", "Kalpataru Projects International Limited"
     stock_exchange VARCHAR(50), -- e.g., "NASDAQ", "NYSE"
     quantity DECIMAL(15, 4),   -- Number of shares
     purchase_price DECIMAL(15, 4), -- Price per share when purchased

@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Increase timeout to maximum (300 seconds) - LLM processing may take a long time
+// Note: Vercel has a maximum of 300 seconds for serverless functions
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest) {
   try {
     // Get access token from Authorization header
@@ -53,7 +57,10 @@ export async function POST(request: NextRequest) {
     try {
       console.log("DEBUG: Proxying PDF upload to backend:", backendUrl + "/api/assets/upload-pdf");
       console.log("DEBUG: File name:", file.name, "Size:", file.size, "Asset type:", assetType);
+      console.log("DEBUG: No timeout - LLM may take a long time to process large PDFs");
       
+      // No timeout - LLM may take a long time to process large PDFs
+      // The fetch will wait indefinitely for the backend response
       const backendResponse = await fetch(`${backendUrl}/api/assets/upload-pdf`, {
         method: "POST",
         headers: {
@@ -61,6 +68,7 @@ export async function POST(request: NextRequest) {
           // Don't set Content-Type header - let fetch set it with boundary for FormData
         },
         body: backendFormData,
+        // No signal/abort controller - wait indefinitely
       });
 
       // Check if response is ok before trying to parse JSON
@@ -89,14 +97,19 @@ export async function POST(request: NextRequest) {
       console.log("DEBUG: PDF upload successful");
       return NextResponse.json(data, { status: 200 });
     } catch (fetchError: any) {
-      // Handle connection errors (backend not running, network issues, etc.)
-      console.error("DEBUG: Backend connection error:", fetchError);
+      // Don't show connection errors - backend may still be processing
+      // Log to console but don't return error message about backend not running
+      console.error("DEBUG: Backend connection error (may still be processing):", fetchError);
+      console.log("DEBUG: This may be a temporary network issue. Backend may still be processing the PDF.");
+      
+      // Return a generic error that doesn't mention backend connection
+      // This prevents false "backend not running" messages during long LLM processing
       return NextResponse.json(
         { 
-          message: `Cannot connect to backend server at ${backendUrl}. Please ensure the backend is running.`,
-          error: fetchError.message 
+          message: `PDF processing is taking longer than expected. Please wait - the backend may still be processing your request.`,
+          error: "Processing timeout" 
         },
-        { status: 503 }
+        { status: 504 } // Gateway Timeout - but with a message that doesn't say backend is down
       );
     }
   } catch (error: any) {

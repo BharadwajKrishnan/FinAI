@@ -139,49 +139,96 @@ class LLMService:
             # Extract text from response
             response_text = None
             
+            # Log response structure for debugging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Response type: {type(response)}")
+            logger.info(f"Response attributes: {dir(response)}")
+            if hasattr(response, '__dict__'):
+                logger.info(f"Response __dict__: {response.__dict__}")
+            
             # Try direct text attribute first
             if hasattr(response, 'text') and response.text:
                 response_text = response.text
+                logger.info("Extracted text from response.text")
             
             # If no direct text, try extracting from candidates
             if not response_text and hasattr(response, 'candidates') and response.candidates:
+                logger.info(f"Found candidates: {len(response.candidates)}")
                 if len(response.candidates) > 0:
                     candidate = response.candidates[0]
+                    logger.info(f"Candidate type: {type(candidate)}, attributes: {dir(candidate) if hasattr(candidate, '__dict__') else 'N/A'}")
                     if candidate:
+                        # Check finish reason - if MAX_TOKENS, the response was truncated
+                        if hasattr(candidate, 'finish_reason'):
+                            finish_reason = str(candidate.finish_reason)
+                            logger.info(f"Candidate finish_reason: {finish_reason}")
+                            if 'MAX_TOKENS' in finish_reason:
+                                logger.warning("Response hit MAX_TOKENS limit - response may be truncated")
+                        
                         # Try to get content from candidate
                         content = None
                         if hasattr(candidate, 'content'):
                             content = candidate.content
+                            logger.info(f"Found content from candidate.content: {type(content)}")
+                            if content:
+                                logger.info(f"Content attributes: {dir(content)}")
                         elif hasattr(candidate, 'parts'):
                             # Some response formats have parts directly on candidate
                             content = type('obj', (object,), {'parts': candidate.parts})()
+                            logger.info("Found parts directly on candidate")
                         
                         if content:
-                            # Get parts from content
+                            # Get parts from content - Content object has parts attribute
                             parts = None
                             if hasattr(content, 'parts'):
                                 parts = content.parts
-                            elif hasattr(content, '__iter__'):
+                                logger.info(f"Found parts from content.parts: {type(parts)}, length: {len(parts) if hasattr(parts, '__len__') else 'N/A'}")
+                            elif hasattr(content, '__iter__') and not isinstance(content, str):
                                 # Content might be iterable directly
                                 parts = content
+                                logger.info("Content is iterable directly")
                             
                             if parts is not None:
                                 text_parts = []
                                 try:
-                                    for part in parts:
+                                    # Handle both list and single part
+                                    if not isinstance(parts, (list, tuple)):
+                                        parts = [parts]
+                                    
+                                    for idx, part in enumerate(parts):
                                         if part is None:
                                             continue
-                                        # Extract text content
-                                        if hasattr(part, 'text') and part.text:
-                                            text_parts.append(str(part.text))
+                                        logger.info(f"Part {idx} type: {type(part)}")
+                                        # Extract text content - part should have text attribute
+                                        if hasattr(part, 'text'):
+                                            part_text = part.text
+                                            if part_text:
+                                                text_parts.append(str(part_text))
+                                                logger.info(f"Extracted text from part {idx}: {str(part_text)[:100]}...")
+                                        elif isinstance(part, str):
+                                            text_parts.append(part)
+                                            logger.info(f"Part {idx} is string: {part[:100]}...")
+                                        else:
+                                            # Try to get string representation
+                                            part_str = str(part)
+                                            if part_str and not part_str.startswith('<'):
+                                                text_parts.append(part_str)
+                                                logger.info(f"Part {idx} converted to string: {part_str[:100]}...")
+                                    
                                     if text_parts:
                                         response_text = "".join(text_parts)
+                                        logger.info(f"Successfully extracted text from parts, total length: {len(response_text)}")
+                                    else:
+                                        logger.warning("No text extracted from parts")
                                 except Exception as extract_error:
-                                    # Try to get any string representation
-                                    try:
-                                        response_text = str(response)
-                                    except:
-                                        pass
+                                    logger.error(f"Error extracting from parts: {str(extract_error)}")
+                                    import traceback
+                                    logger.error(traceback.format_exc())
+                        else:
+                            logger.warning("Candidate has no content attribute")
+            else:
+                logger.warning("No candidates found in response")
             
             # Only add to conversation history if we got a successful response
             if response_text:
@@ -195,6 +242,22 @@ class LLMService:
                         "content": response_text})
                 
                 return response_text
+            
+            # Log detailed error information
+            logger.error("Failed to extract text from response")
+            logger.error(f"Response object: {response}")
+            logger.error(f"Response type: {type(response)}")
+            if hasattr(response, '__dict__'):
+                logger.error(f"Response __dict__: {response.__dict__}")
+            
+            # Try one more fallback - check if response has a __str__ or __repr__ that contains text
+            try:
+                response_str = str(response)
+                if response_str and len(response_str) > 10 and not response_str.startswith('<'):
+                    logger.info(f"Using str(response) as fallback: {response_str[:200]}...")
+                    return response_str
+            except Exception as e:
+                logger.error(f"Failed to convert response to string: {str(e)}")
             
             return "Error: Could not extract response from Gemini API."
             
