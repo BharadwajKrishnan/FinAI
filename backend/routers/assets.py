@@ -942,16 +942,23 @@ async def upload_pdf_for_asset_type(
                 text_response = await _fixed_deposit_llm_service.chat(
                     system_prompt="<Role>You are a helpful financial assistant that extracts fixed deposit information from a document.</Role>",
                     message=instruction_prompt, 
-                    max_tokens=100000,
+                    max_tokens=50000,
                     temperature=0.7
                 )
 
                 print(f"Text response: {text_response}")
+                logger.info(f"LLM response type: {type(text_response)}, length: {len(text_response) if text_response else 0}")
                 
                 if not text_response:
                     errors.append("No response from LLM")
+                    logger.error("LLM returned empty response")
                 elif text_response.startswith("Error:"):
                     errors.append(f"LLM returned error: {text_response}")
+                    logger.error(f"LLM error: {text_response}")
+                    # If it's a "Could not extract response" error, provide more context
+                    if "Could not extract response" in text_response:
+                        logger.error("This usually means the API call succeeded but the response format was unexpected. The model might be overloaded or returning an unexpected format.")
+                        errors.append("The AI service returned an unexpected response format. This may be due to service overload. Please try again in a few moments.")
                 else:
                     # Parse JSON response - LLM returns a JSON object or array
                     try:
@@ -2307,7 +2314,17 @@ async def upload_pdf_for_asset_type(
         elif created_assets:
             message = f"Successfully added {len(created_assets)} {asset_type}(s) from PDF"
         else:
-            message = "No assets could be extracted from the PDF"
+            # Check if there were errors (like LLM API errors)
+            if errors:
+                # Extract the main error message
+                main_error = errors[0] if errors else "Unknown error"
+                # Check if it's an LLM service error
+                if "LLM returned error" in main_error or "503" in main_error or "UNAVAILABLE" in main_error:
+                    message = f"Failed to extract assets from PDF: The AI service is temporarily unavailable. Please try again in a few moments. Error: {main_error}"
+                else:
+                    message = f"Failed to extract assets from PDF: {main_error}"
+            else:
+                message = "No assets could be extracted from the PDF"
         
         return {
             "success": len(created_assets) > 0,
