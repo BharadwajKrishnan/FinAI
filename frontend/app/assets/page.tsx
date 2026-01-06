@@ -871,7 +871,12 @@ export default function AssetsPage() {
   // Helper function to get family member name from familyMemberId
   const getFamilyMemberName = (familyMemberId?: string): string => {
     if (!familyMemberId || familyMemberId === null || familyMemberId === undefined || familyMemberId === "") {
-      return "Self";
+      // Find the "Self" family member to get the actual user name
+      const selfMember = familyMembers.find(m => m.relationship.toLowerCase() === "self");
+      if (selfMember) {
+        return `${selfMember.name} (Self)`;
+      }
+      return "Self"; // Fallback if Self member not found
     }
     const member = familyMembers.find(m => m.id === familyMemberId);
     return member ? `${member.name} (${member.relationship})` : "Unknown";
@@ -1823,10 +1828,21 @@ export default function AssetsPage() {
         
         if (response.ok) {
           const createdAsset = await response.json();
+          console.log("Fixed deposit creation response:", createdAsset);
+          
+          // Check if this is a duplicate (backend returns existing asset with duplicate flag)
+          if (createdAsset.duplicate && createdAsset.message) {
+            // Show popup notification for duplicate
+            alert(createdAsset.message);
+            return null; // Don't add to UI since it's a duplicate
+          }
+          
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
           console.error(`Failed to create fixed deposit: ${errorData.message || response.statusText}`, errorData);
+          // Show error popup
+          alert(errorData.message || errorData.detail || "Failed to create fixed deposit");
         }
         return null;
       }
@@ -5232,6 +5248,12 @@ export default function AssetsPage() {
                       if (dbId && typeof dbId === 'string') {
                         newFixedDeposit.dbId = dbId;
                         newFixedDeposit.id = dbId; // Use database ID as the main ID
+                      } else if (dbId === null) {
+                        // Duplicate detected - don't add to UI, popup already shown in saveFixedDepositToDatabase
+                        setEditingFixedDepositId(null);
+                        setIsAddAssetModalOpen(false);
+                        setSelectedAssetType("");
+                        return; // Exit early, don't add duplicate to state
                       }
                       
                       setFixedDeposits((prev) => {

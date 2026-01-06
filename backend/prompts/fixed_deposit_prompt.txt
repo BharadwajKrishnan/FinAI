@@ -1,27 +1,40 @@
-Your task is to return the fixed deposits in a JSON format.
+<Task>
+Your task is to extract all the fixed deposit information from the complete document provided by the user.
+Extract all the fixed deposit information from the entire document.
+</Task>
 
-Do not include any other text in your response. Only return the JSON.
+<Important>
+1. Extract only fixed deposit information. Do not extract details related to stocks, mutual funds, bank accounts or commodities.
+2. All the fixed deposit details that you have extracted must be exactly as per the values in the document. Do not modify any values.
+3. Return the fixed deposits in a JSON format. Do not include any other text in your response. Only return the JSON.
+4. If there are no fixed deposit information in the document, then return an empty JSON array [].
+5. Make sure that there are no duplicate fixed deposits in the JSON list. All the fixed deposits in the JSON list must be unique.
+6. Return ONLY ONE JSON array. Do not repeat or duplicate the JSON array in your response.
+7. The Duration field is REQUIRED. If the duration is not explicitly shown in months, calculate it from the start date and maturity date, or extract it from the document in whatever unit it's shown (days, months, years) and convert to months.
+</Important>
 
-Each JSON object should have the following keys:
+<Output Format>
+Each JSON object MUST have the following keys with EXACT names:
+1. "Bank Name" - Extract the name of the bank. If an account number or FD number is present, format it as "Bank Name [Account Number]". For example: "ICICI [18374982]" where ICICI is the bank name and 18374982 is the account/FD number. If no account number is present, use just the bank name (e.g., "ICICI").
+2. "Amount Invested" - Extract the principal amount or amount invested EXACTLY as shown in the document.
+3. "Rate of Interest" - Extract the interest rate EXACTLY as shown in the document.
+4. "Duration" - Extract the duration in months. If the document shows duration in days, convert to months (divide by 30). If shown in years, convert to months (multiply by 12). If shown in months, use it directly. This field is REQUIRED and must be a number (not empty string).
+5. "Start Date" - Extract the start date in YYYY-MM-DD format.
+6. "Owner Name" - Primary account holder's name. If not provided, use "self"
+</Output Format>
 
-REQUIRED FIELDS (must be present for every fixed deposit):
-1. bank_name (Account Number / Bank Account Number) - REQUIRED - This will be used as the asset name
-2. principal_amount (Amount Invested / Principal Amount) - REQUIRED
-3. fd_interest_rate (Rate of Interest / Interest Rate) - REQUIRED
-4. start_date (Start Date in YYYY-MM-DD format) - REQUIRED
-5. maturity_date (Maturity Date in YYYY-MM-DD format) - REQUIRED - Must be extracted directly from the document, do not calculate it
+<Family Member Details>
+The following family members have been added by the user. Use this information to identify which family member each fixed deposit belongs to by matching the account holder name in the document with the names below.
+{family_members}
 
-OPTIONAL FIELDS (include if available in the document):
-6. maturity_amount (Total Amount at Maturity / Amount at Maturity / Maturity Value / Final Amount) - Optional - Extract this value ONLY if it is explicitly shown in the document with labels like "Total Amount at Maturity", "Maturity Amount", "Amount at Maturity", "Maturity Value", or "Final Amount". DO NOT calculate it. If the document does not explicitly show this value, leave it as null.
-7. duration_months (Duration in months) - Optional - Extract this from the document if available. Do not calculate it.
-8. owner_name (Owner Name - only the primary holder's name) - Optional - If not provided, use "self"
+When extracting the "Owner Name" field:
+1. Match the account holder name from the document with the family member names listed above (case-insensitive matching)
+2. If you find a match, use the exact name as shown in the family members list above
+3. If no match is found or the account holder name is not clearly visible in the document, use "self" as the Owner Name
+4. The Owner Name should be one of the names from the family members list, or "self" if it's the primary user's account
+</Family Member Details>
 
-CRITICAL REQUIREMENTS:
-1. You MUST provide all 5 REQUIRED fields (bank_name, principal_amount, fd_interest_rate, start_date, maturity_date) for EVERY fixed deposit. Do not skip any fixed deposit if these fields are present.
-2. If a required field is missing from the document, you can leave it as null, but try your best to extract all required fields.
-3. Make sure that you have extracted ALL fixed deposits from the page. Do not skip any fixed deposit.
-4. For maturity_amount: ONLY extract it if you see it explicitly written in the document with one of the labels mentioned above. DO NOT calculate it using principal_amount, interest rate, or duration. If it's not explicitly shown, set it to null.
-5. For optional fields, only include them if they are clearly present in the document.
-
-Return a JSON array of fixed deposit objects. If there are multiple fixed deposits on this page, return all of them in the array.
-
+<Document>
+Here is the complete document uploaded by the user. The document may contain multiple pages separated by "--- Page Separator ---".
+{page}
+</Document>

@@ -16,6 +16,7 @@ from typing import List, Optional, Dict, Any
 # Third-party imports
 import pdfplumber
 import PyPDF2
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.security import HTTPAuthorizationCredentials
 from PyPDF2 import PdfWriter
@@ -115,17 +116,18 @@ def clean_json_response(text_response: str) -> str:
     Returns:
         Cleaned JSON string
     """
+    import re
     cleaned_response = text_response.strip()
     
     # Remove opening markdown code block (handle both ```json and ```)
-    if cleaned_response.startswith("```json"):
-        cleaned_response = cleaned_response[7:].lstrip()  # Remove ```json and any following whitespace/newlines
-    elif cleaned_response.startswith("```"):
-        cleaned_response = cleaned_response[3:].lstrip()  # Remove ``` and any following whitespace/newlines
+    # Use regex to handle multiple occurrences and variations
+    cleaned_response = re.sub(r'^```(?:json)?\s*\n?', '', cleaned_response, flags=re.MULTILINE)
     
-    # Remove closing markdown code block
-    if cleaned_response.endswith("```"):
-        cleaned_response = cleaned_response[:-3].rstrip()  # Remove ``` and any preceding whitespace/newlines
+    # Remove closing markdown code block (handle multiple occurrences)
+    cleaned_response = re.sub(r'\n?```\s*$', '', cleaned_response, flags=re.MULTILINE)
+    
+    # Remove any remaining ``` blocks in the middle (shouldn't happen, but just in case)
+    cleaned_response = re.sub(r'```(?:json)?', '', cleaned_response)
     
     cleaned_response = cleaned_response.strip()
     return cleaned_response
@@ -296,6 +298,48 @@ async def create_asset(
                     # Log error but continue - don't block creation if check fails
                     logger = logging.getLogger(__name__)
                     logger.warning(f"Error checking for duplicate bank account: {str(check_error)}")
+        
+        elif asset_data.get("type") == "fixed_deposit":
+            bank_name = asset_data.get("name")  # Fixed deposit uses "name" field for bank name
+            principal_amount = asset_data.get("principal_amount")
+            
+            if bank_name and principal_amount:
+                # Normalize for comparison (case-insensitive, strip whitespace)
+                normalized_bank_name = str(bank_name).strip().lower()
+                normalized_amount = str(principal_amount).strip().lower()
+                
+                # Check if fixed deposit already exists in database (same bank name and principal amount)
+                try:
+                    # Fetch all fixed deposits (including NULL is_active for backward compatibility)
+                    existing_response = supabase_service.table("assets").select("id, name, principal_amount, is_active").eq("user_id", user_id).eq("type", "fixed_deposit").execute()
+                    all_existing_fds = existing_response.data if existing_response.data else []
+                    # Filter to only active fixed deposits (is_active = True or NULL)
+                    existing_fds = [fd for fd in all_existing_fds if fd.get("is_active") is True or fd.get("is_active") is None]
+                    
+                    for existing_fd in existing_fds:
+                        existing_bank_name = existing_fd.get("name", "")
+                        existing_amount = existing_fd.get("principal_amount", "")
+                        if existing_bank_name and existing_amount:
+                            existing_normalized_name = str(existing_bank_name).strip().lower()
+                            existing_normalized_amount = str(existing_amount).strip().lower()
+                            if normalized_bank_name == existing_normalized_name and normalized_amount == existing_normalized_amount:
+                                # Fetch the complete existing asset from database
+                                existing_asset_id = existing_fd.get("id")
+                                if existing_asset_id:
+                                    full_asset_response = supabase_service.table("assets").select("*").eq("id", existing_asset_id).execute()
+                                    if full_asset_response.data and len(full_asset_response.data) > 0:
+                                        existing_asset = full_asset_response.data[0]
+                                        duplicate_message = f"Fixed deposit with bank name '{bank_name}' and amount '{principal_amount}' was not added because it already exists in your portfolio."
+                                        # Add message and duplicate flag to the response
+                                        existing_asset["message"] = duplicate_message
+                                        existing_asset["duplicate"] = True
+                                        logger = logging.getLogger(__name__)
+                                        logger.info(f"Duplicate fixed deposit detected: {bank_name}, Amount: {principal_amount}. Returning existing asset with message.")
+                                        return existing_asset
+                except Exception as check_error:
+                    # Log error but continue - don't block creation if check fails
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error checking for duplicate fixed deposit: {str(check_error)}")
         
         # Use service role client for backend operations
         # We've already validated the user via JWT and set user_id correctly
@@ -810,183 +854,591 @@ async def upload_pdf_for_asset_type(
         created_assets = []
         errors = []
         skipped_account_numbers = []  # Track account numbers skipped due to duplicates (for bank accounts)
+        skipped_fd_keys = []  # Track fixed deposits skipped due to duplicates (for fixed deposits)
         
         # Process fixed deposits or stocks
         if asset_type == "fixed_deposit":
+            logger = logging.getLogger(__name__)
+            logger.info("=== FIXED DEPOSIT PROCESSING STARTED ===")
+            print("=== FIXED DEPOSIT PROCESSING STARTED ===")
+            
             if not _fixed_deposit_llm_service.api_key:
+                logger.error("GEMINI_API_KEY not found")
+                print("ERROR: GEMINI_API_KEY not found")
                 raise HTTPException(status_code=500, detail="GEMINI_API_KEY not found in environment variables")
             
-            # Process each page
-            # Store context from previous pages (input and output pairs)
-            previous_contexts = []
+            logger.info("API key found, proceeding with fixed deposit extraction")
+            print("API key found, proceeding with fixed deposit extraction")
             
-            for page_idx, page_content in enumerate(pdf_pages):
-                if not page_content or not page_content.strip():
-                    continue
+            # Fetch family members for the user
+            logger.info("Fetching family members...")
+            print("Fetching family members...")
+            family_members_list = []
+            try:
+                family_members_response = supabase_service.table("family_members").select("*").eq("user_id", user_id).execute()
+                family_members_list = family_members_response.data if family_members_response.data else []
+                logger.info(f"Found {len(family_members_list)} family members")
+                print(f"Found {len(family_members_list)} family members")
+            except Exception as e:
+                logger.warning(f"Failed to fetch family members: {str(e)}")
+                print(f"Warning: Failed to fetch family members: {str(e)}")
+            
+            # Format family members for the prompt and create mapping
+            family_members_text = ""
+            family_members_map = {}
+            if family_members_list:
+                family_members_lines = []
+                for fm in family_members_list:
+                    name = fm.get("name", "")
+                    relationship = fm.get("relationship", "")
+                    notes = fm.get("notes", "")
+                    fm_id = fm.get("id", "")
+                    if name:
+                        line = f"- Name: {name}, Relationship: {relationship}"
+                        if notes:
+                            line += f", Notes: {notes}"
+                        family_members_lines.append(line)
+                        # Create mapping for owner name matching
+                        if fm_id:
+                            family_members_map[name.lower()] = str(fm_id)
+                if family_members_lines:
+                    family_members_text = "\n".join(family_members_lines)
+            
+            logger.info(f"Family members formatted. Text length: {len(family_members_text)}")
+            print(f"Family members formatted. Text length: {len(family_members_text)}")
+            
+            # Combine all PDF pages into a single document
+            complete_pdf_content = "\n\n--- Page Separator ---\n\n".join(pdf_pages)
+            logger.info(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
+            print(f"Combined PDF content. Total length: {len(complete_pdf_content)} chars")
+            
+            # Process the complete PDF document
+            all_fixed_deposits = []
+            
+            logger.info(f"Starting fixed deposit extraction. PDF has {len(pdf_pages)} pages. Total content length: {len(complete_pdf_content)} chars")
+            print(f"Starting fixed deposit extraction. PDF has {len(pdf_pages)} pages")
+            
+            try:
+                # Load prompt from file and replace placeholders with actual content
+                logger.info("Loading prompt from file...")
+                print("Loading prompt from file...")
+                prompt_template = load_prompt("fixed_deposit_prompt.txt")
+                logger.info("Prompt loaded successfully")
+                print("Prompt loaded successfully")
                 
+                logger.info("Formatting prompt with PDF content and family members...")
+                print("Formatting prompt...")
+                instruction_prompt = prompt_template.format(
+                    page=complete_pdf_content,
+                    family_members=family_members_text if family_members_text else "No family members have been added yet."
+                )
+                logger.info(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                print(f"Prompt formatted. Length: {len(instruction_prompt)} chars")
+                
+                # Use chat function from LLMService - LLM will return a JSON object/array
+                logger.info("Calling LLM for fixed deposit extraction...")
+                print("Calling LLM for fixed deposit extraction...")
+                
+                text_response = await _fixed_deposit_llm_service.chat(
+                    system_prompt="<Role>You are a helpful financial assistant that extracts fixed deposit information from a document.</Role>",
+                    message=instruction_prompt, 
+                    max_tokens=100000,
+                    temperature=0.7
+                )
+
+                print(f"Text response: {text_response}")
+                
+                if not text_response:
+                    errors.append("No response from LLM")
+                elif text_response.startswith("Error:"):
+                    errors.append(f"LLM returned error: {text_response}")
+                else:
+                    # Parse JSON response - LLM returns a JSON object or array
+                    try:
+                        # Clean the response - remove markdown code blocks if present
+                        cleaned_response = clean_json_response(text_response)
+                        
+                        print(f"Cleaned response: {cleaned_response}")
+                        
+                        # Check if response looks complete (should end with ] or })
+                        if not (cleaned_response.rstrip().endswith(']') or cleaned_response.rstrip().endswith('}')):
+                            logger.warning("Response may be incomplete - doesn't end with ] or }")
+                            print("WARNING: Response may be incomplete")
+                        
+                        # Parse the JSON response
+                        logger.info("Parsing JSON...")
+                        print("Parsing JSON...")
+                        fixed_deposit_obj = json.loads(cleaned_response)
+                        logger.info(f"JSON parsed successfully. Type: {type(fixed_deposit_obj).__name__}")
+                        print(f"JSON parsed successfully. Type: {type(fixed_deposit_obj).__name__}")
+                        
+                        # Handle different response formats
+                        if isinstance(fixed_deposit_obj, list):
+                            logger.info(f"Processing list with {len(fixed_deposit_obj)} items")
+                            print(f"Processing list with {len(fixed_deposit_obj)} items")
+                            for idx, item in enumerate(fixed_deposit_obj):
+                                logger.info(f"Processing item {idx + 1}: {item}")
+                                print(f"Processing item {idx + 1}: {item}")
+                                if item and isinstance(item, dict) and len(item) > 0:
+                                    # Check if it has required fields
+                                    if item.get("Bank Name") or item.get("Amount Invested"):
+                                        all_fixed_deposits.append(item)
+                                        logger.info(f"Added fixed deposit from list: {item.get('Bank Name', 'Unknown')}")
+                                        print(f"Added fixed deposit from list: {item.get('Bank Name', 'Unknown')}")
+                        elif isinstance(fixed_deposit_obj, dict):
+                            # If it's a single object, check if it's empty
+                            if len(fixed_deposit_obj) > 0:
+                                if fixed_deposit_obj.get("Bank Name") or fixed_deposit_obj.get("Amount Invested"):
+                                    all_fixed_deposits.append(fixed_deposit_obj)
+                                    logger.info(f"Added fixed deposit: {fixed_deposit_obj.get('Bank Name', 'Unknown')}")
+                                    print(f"Added fixed deposit: {fixed_deposit_obj.get('Bank Name', 'Unknown')}")
+                        
+                        logger.info(f"Total fixed deposits collected: {len(all_fixed_deposits)}")
+                        print(f"Total fixed deposits collected: {len(all_fixed_deposits)}")
+                        
+                    except json.JSONDecodeError as e:
+                        error_msg = f"Invalid JSON response from LLM: {str(e)}"
+                        errors.append(error_msg)
+                        logger.error(f"JSON decode error: {error_msg}")
+                        logger.error(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+                        logger.error(f"Raw response (first 500 chars): {text_response[:500]}")
+                        print(f"ERROR: JSON decode failed. Error: {str(e)}")
+                        print(f"Cleaned response (first 500 chars): {cleaned_response[:500] if 'cleaned_response' in locals() else 'N/A'}")
+                        # Try to extract JSON from the response if it's partially valid
+                        try:
+                            # First, try to find the first complete JSON array
+                            # Look for the first '[' that starts a valid JSON array
+                            json_start = cleaned_response.find('[')
+                            if json_start != -1:
+                                # Extract from first '[' onwards
+                                json_substring = cleaned_response[json_start:]
+                                
+                                # Find the matching closing bracket for the first array
+                                bracket_count = 0
+                                in_string = False
+                                escape_next = False
+                                array_end = -1
+                                
+                                for i, char in enumerate(json_substring):
+                                    if escape_next:
+                                        escape_next = False
+                                        continue
+                                    if char == '\\':
+                                        escape_next = True
+                                        continue
+                                    if char == '"' and not escape_next:
+                                        in_string = not in_string
+                                        continue
+                                    if not in_string:
+                                        if char == '[':
+                                            bracket_count += 1
+                                        elif char == ']':
+                                            bracket_count -= 1
+                                            if bracket_count == 0:
+                                                # Found complete array
+                                                array_end = i + 1
+                                                break
+                                
+                                if array_end > 0:
+                                    # Extract just the first complete array
+                                    first_array = json_substring[:array_end]
+                                    logger.info(f"Extracted first JSON array (length: {len(first_array)} chars)")
+                                    print(f"Extracted first JSON array (length: {len(first_array)} chars)")
+                                    
+                                    # Clean any control characters that might cause issues
+                                    first_array = first_array.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                                    
+                                    # Try parsing the first array
+                                    fixed_obj = json.loads(first_array)
+                                    logger.info(f"Successfully parsed first JSON array")
+                                    print(f"Successfully parsed first JSON array")
+                                    
+                                    # Process the fixed object
+                                    if isinstance(fixed_obj, list):
+                                        logger.info(f"Found {len(fixed_obj)} items in extracted array")
+                                        print(f"Found {len(fixed_obj)} items in extracted array")
+                                        all_fixed_deposits.extend([item for item in fixed_obj if item and isinstance(item, dict)])
+                                    elif isinstance(fixed_obj, dict):
+                                        all_fixed_deposits.append(fixed_obj)
+                                else:
+                                    # Array is incomplete - try to extract individual objects
+                                    logger.warning("Could not find complete JSON array, trying to extract individual objects")
+                                    print("WARNING: Could not find complete JSON array, trying to extract individual objects")
+                                    
+                                    # Find where duplicate starts (look for second '[' or markdown markers)
+                                    duplicate_marker = json_substring.find('```', 1)  # Find second occurrence
+                                    if duplicate_marker == -1:
+                                        duplicate_marker = json_substring.find('[', 1)  # Find second '['
+                                    if duplicate_marker > 0:
+                                        # Only process up to the duplicate marker
+                                        json_substring = json_substring[:duplicate_marker]
+                                        logger.info(f"Truncated response at duplicate marker (position {duplicate_marker})")
+                                        print(f"Truncated response at duplicate marker (position {duplicate_marker})")
+                                    
+                                    # Try to find and extract individual JSON objects using bracket matching
+                                    extracted_objects = []
+                                    seen_objects = set()  # Track seen objects to avoid duplicates
+                                    
+                                    i = 0
+                                    while i < len(json_substring):
+                                        # Find the start of an object
+                                        obj_start = json_substring.find('{', i)
+                                        if obj_start == -1:
+                                            break
+                                        
+                                        # Find the matching closing brace
+                                        brace_count = 0
+                                        in_string = False
+                                        escape_next = False
+                                        obj_end = -1
+                                        
+                                        for j in range(obj_start, len(json_substring)):
+                                            char = json_substring[j]
+                                            if escape_next:
+                                                escape_next = False
+                                                continue
+                                            if char == '\\':
+                                                escape_next = True
+                                                continue
+                                            if char == '"' and not escape_next:
+                                                in_string = not in_string
+                                                continue
+                                            if not in_string:
+                                                if char == '{':
+                                                    brace_count += 1
+                                                elif char == '}':
+                                                    brace_count -= 1
+                                                    if brace_count == 0:
+                                                        obj_end = j + 1
+                                                        break
+                                        
+                                        if obj_end > obj_start:
+                                            # Extract the object
+                                            obj_str = json_substring[obj_start:obj_end]
+                                            # Clean control characters
+                                            obj_str = obj_str.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                                            try:
+                                                obj = json.loads(obj_str)
+                                                if isinstance(obj, dict):
+                                                    # Check if it has at least Bank Name or Amount Invested
+                                                    bank_name = obj.get("Bank Name") or ""
+                                                    amount = obj.get("Amount Invested") or ""
+                                                    if bank_name or amount:
+                                                        # Create a unique key to avoid duplicates
+                                                        obj_key = f"{bank_name.lower().strip()}_{str(amount).strip().lower()}"
+                                                        if obj_key not in seen_objects:
+                                                            seen_objects.add(obj_key)
+                                                            extracted_objects.append(obj)
+                                                            logger.info(f"Extracted object: {bank_name}, Amount: {amount}")
+                                                            print(f"Extracted object: {bank_name}, Amount: {amount}")
+                                                        else:
+                                                            logger.info(f"Skipping duplicate object: {bank_name}, Amount: {amount}")
+                                                            print(f"Skipping duplicate object: {bank_name}, Amount: {amount}")
+                                            except json.JSONDecodeError as e:
+                                                logger.warning(f"Failed to parse object at position {obj_start}: {str(e)}")
+                                                print(f"WARNING: Failed to parse object: {str(e)}")
+                                            
+                                            # Move to after this object
+                                            i = obj_end
+                                        else:
+                                            # No complete object found, move forward
+                                            i = obj_start + 1
+                                    
+                                    if extracted_objects:
+                                        logger.info(f"Successfully extracted {len(extracted_objects)} unique objects from incomplete response")
+                                        print(f"Successfully extracted {len(extracted_objects)} unique objects from incomplete response")
+                                        all_fixed_deposits.extend(extracted_objects)
+                                    else:
+                                        logger.warning("Could not extract any valid objects from incomplete response")
+                                        print("WARNING: Could not extract any valid objects from incomplete response")
+                            else:
+                                # Try to find a JSON object instead
+                                json_start = cleaned_response.find('{')
+                                if json_start != -1:
+                                    # Similar logic for objects
+                                    json_substring = cleaned_response[json_start:]
+                                    brace_count = 0
+                                    in_string = False
+                                    escape_next = False
+                                    object_end = -1
+                                    
+                                    for i, char in enumerate(json_substring):
+                                        if escape_next:
+                                            escape_next = False
+                                            continue
+                                        if char == '\\':
+                                            escape_next = True
+                                            continue
+                                        if char == '"' and not escape_next:
+                                            in_string = not in_string
+                                            continue
+                                        if not in_string:
+                                            if char == '{':
+                                                brace_count += 1
+                                            elif char == '}':
+                                                brace_count -= 1
+                                                if brace_count == 0:
+                                                    object_end = i + 1
+                                                    break
+                                    
+                                    if object_end > 0:
+                                        first_object = json_substring[:object_end]
+                                        fixed_obj = json.loads(first_object)
+                                        if isinstance(fixed_obj, dict):
+                                            all_fixed_deposits.append(fixed_obj)
+                        except Exception as fix_error:
+                            logger.error(f"Failed to extract valid JSON from partial response: {str(fix_error)}")
+                            print(f"Failed to extract valid JSON: {str(fix_error)}")
+                    except Exception as e:
+                        errors.append(f"Error parsing response: {str(e)}")
+                        logger.error(f"Parse error: {str(e)}")
+            
+            except Exception as e:
+                errors.append(f"Error processing PDF: {str(e)}")
+                logger.error(f"Error processing PDF: {str(e)}")
+                print(f"ERROR processing PDF: {str(e)}")
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error(error_trace)
+                print(f"Traceback: {error_trace}")
+            
+            # Remove duplicates based on bank name and principal amount (keep first occurrence)
+            logger.info(f"Before deduplication: {len(all_fixed_deposits)} fixed deposits")
+            print(f"Before deduplication: {len(all_fixed_deposits)} fixed deposits")
+            seen_fds = set()
+            unique_fixed_deposits = []
+            for fd in all_fixed_deposits:
+                bank_name = fd.get("Bank Name") or fd.get("bank_name") or ""
+                amount_invested = fd.get("Amount Invested") or fd.get("amount_invested") or ""
+                # Create a unique key from bank name and amount
+                if bank_name and amount_invested:
+                    fd_key = f"{bank_name.lower().strip()}_{str(amount_invested).strip().lower()}"
+                    if fd_key not in seen_fds:
+                        seen_fds.add(fd_key)
+                        unique_fixed_deposits.append(fd)
+                    else:
+                        logger.info(f"Skipping duplicate fixed deposit: {bank_name}, Amount: {amount_invested}")
+                        print(f"Skipping duplicate fixed deposit: {bank_name}, Amount: {amount_invested}")
+                else:
+                    # If no bank name or amount, keep it (shouldn't happen based on validation)
+                    unique_fixed_deposits.append(fd)
+            
+            all_fixed_deposits = unique_fixed_deposits
+            logger.info(f"After deduplication: {len(all_fixed_deposits)} unique fixed deposits")
+            print(f"After deduplication: {len(all_fixed_deposits)} unique fixed deposits")
+            
+            # Fetch existing fixed deposits from database to check for duplicates
+            existing_fixed_deposits = []
+            existing_fd_keys = set()
+            try:
+                logger.info("Fetching existing fixed deposits from database...")
+                print("Fetching existing fixed deposits from database...")
+                existing_assets_response = supabase_service.table("assets").select("name, principal_amount").eq("user_id", user_id).eq("type", "fixed_deposit").execute()
+                all_existing_fds = existing_assets_response.data if existing_assets_response.data else []
+                # Filter to only active fixed deposits (is_active = True or NULL)
+                existing_fixed_deposits = [fd for fd in all_existing_fds if fd.get("is_active") is True or fd.get("is_active") is None]
+                
+                # Create set of existing FD keys (bank_name + principal_amount)
+                for existing_fd in existing_fixed_deposits:
+                    existing_bank_name = existing_fd.get("name", "")
+                    existing_amount = existing_fd.get("principal_amount", "")
+                    if existing_bank_name and existing_amount:
+                        existing_key = f"{existing_bank_name.lower().strip()}_{str(existing_amount).strip().lower()}"
+                        existing_fd_keys.add(existing_key)
+                
+                logger.info(f"Found {len(existing_fixed_deposits)} existing fixed deposits in database")
+                print(f"Found {len(existing_fixed_deposits)} existing fixed deposits in database")
+            except Exception as e:
+                logger.warning(f"Error fetching existing fixed deposits: {str(e)}")
+                print(f"Warning: Error fetching existing fixed deposits: {str(e)}")
+            
+            # Process all collected fixed deposits
+            logger.info(f"Starting to process {len(all_fixed_deposits)} fixed deposits for database insertion")
+            print(f"Starting to process {len(all_fixed_deposits)} fixed deposits for database insertion")
+            # Reset skipped_fd_keys for this processing (already initialized at function level)
+            skipped_fd_keys = []
+            for fd_idx, fd_data in enumerate(all_fixed_deposits):
                 try:
-                    # Load prompt from file
-                    instruction_prompt = load_prompt("fixed_deposit_prompt.txt")
+                    logger.info(f"Processing fixed deposit {fd_idx + 1}/{len(all_fixed_deposits)}: {fd_data}")
+                    print(f"Processing fixed deposit {fd_idx + 1}/{len(all_fixed_deposits)}")
                     
-                    # Build contents list using helper function
-                    contents = build_contents_list(instruction_prompt, previous_contexts, page_content, page_idx, "fixed_deposit")
+                    # Get currency from market
+                    asset_market = market or "india"
+                    currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
                     
-                    # Call Gemini with JSON mode using LLMService
-                    text_response = await _fixed_deposit_llm_service.generate_json(contents)
+                    # Extract and validate fields (handle multiple possible key names)
+                    bank_name = fd_data.get("Bank Name") or fd_data.get("bank_name") or "Unknown Bank"
+                    amount_invested = fd_data.get("Amount Invested") or fd_data.get("amount_invested") or fd_data.get("Principal Amount") or fd_data.get("principal_amount")
+                    rate_of_interest = fd_data.get("Rate of Interest") or fd_data.get("rate_of_interest") or fd_data.get("Interest Rate") or fd_data.get("fd_interest_rate")
+                    duration = fd_data.get("Duration") or fd_data.get("duration") or fd_data.get("duration_months")
+                    start_date_str = fd_data.get("Start Date") or fd_data.get("start_date")
+                    owner_name = fd_data.get("Owner Name") or fd_data.get("owner_name") or "self"
                     
-                    if not text_response:
-                        errors.append(f"Page {page_idx + 1}: No response from LLM")
+                    # Handle empty string duration (convert to None)
+                    if duration == "" or duration is None:
+                        duration = None
+                    
+                    logger.info(f"Extracted: bank_name={bank_name}, amount={amount_invested}, rate={rate_of_interest}, duration={duration}, start_date={start_date_str}, owner={owner_name}")
+                    print(f"Extracted: bank_name={bank_name}, amount={amount_invested}, rate={rate_of_interest}, duration={duration}")
+                    
+                    # Validate required fields
+                    if not bank_name or not amount_invested or not rate_of_interest or not start_date_str or not duration:
+                        error_msg = f"FD {fd_idx + 1}: Missing required fields (bank_name, amount_invested, rate_of_interest, start_date, or duration). Duration: {duration}"
+                        logger.warning(error_msg)
+                        print(f"WARNING: {error_msg}")
+                        errors.append(error_msg)
                         continue
                     
-                    # Parse JSON response using helper function
-                    try:
-                        fixed_deposits, cleaned_response = clean_and_parse_json_response(text_response)
-                        
-                        # Store input and output for future context (for pages after the first)
-                        # This helps the LLM understand the format and extract data consistently
-                        previous_contexts.append((page_content, cleaned_response))
-                        
-                        # Skip if empty array (no fixed deposits on this page) - this is valid, just log and continue
-                        if len(fixed_deposits) == 0:
-                            continue  # This is fine - just means no FDs on this page
-                        
-                        # Process each fixed deposit
-                        for fd_idx, fd_data in enumerate(fixed_deposits):
-                            try:
-                                # Get currency from market
-                                asset_market = market or "india"
-                                currency = "INR" if asset_market.lower() == "india" else "EUR" if asset_market.lower() == "europe" else "INR"
-                                
-                                # Extract and validate fields
-                                bank_name = fd_data.get("bank_name") or fd_data.get("Bank Name") or "Unknown Bank"
-                                principal_amount = fd_data.get("principal_amount") or fd_data.get("Amount Invested")
-                                fd_interest_rate = fd_data.get("fd_interest_rate") or fd_data.get("Rate of Interest")
-                                duration_months = fd_data.get("duration_months") or fd_data.get("Duration")
-                                start_date_str = fd_data.get("start_date") or fd_data.get("Start Date")
-                                maturity_date_str = fd_data.get("maturity_date") or fd_data.get("Maturity Date")
-                                maturity_amount = fd_data.get("maturity_amount") or fd_data.get("Total Amount at Maturity") or fd_data.get("Maturity Amount") or fd_data.get("Amount at Maturity") or fd_data.get("Maturity Value") or fd_data.get("Final Amount")
-                                owner_name = fd_data.get("owner_name") or fd_data.get("Owner Name") or "self"
-                                
-                                # Validate required fields
-                                if not principal_amount or not fd_interest_rate or not start_date_str:
-                                    error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Missing required fields (principal_amount, fd_interest_rate, or start_date)"
-                                    errors.append(error_msg)
-                                    continue
-                                
-                                # Parse start date
-                                try:
-                                    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                                except:
-                                    # Try other date formats
-                                    try:
-                                        start_date = datetime.strptime(start_date_str, "%d-%m-%Y").date()
-                                    except:
-                                        try:
-                                            start_date = datetime.strptime(start_date_str, "%d/%m/%Y").date()
-                                        except:
-                                            error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Invalid start date format: {start_date_str}"
-                                            errors.append(error_msg)
-                                            continue
-                                
-                                # Get maturity date (must be provided by user/PDF, not calculated)
-                                maturity_date = None
-                                
-                                # Validate that maturity_date is provided (required field)
-                                if not maturity_date_str:
-                                    error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Missing maturity_date. Maturity date must be provided in the document."
-                                    errors.append(error_msg)
-                                    continue
-                                
-                                # Parse maturity_date from LLM response (user-provided value)
-                                try:
-                                    maturity_date = datetime.strptime(maturity_date_str, "%Y-%m-%d").date()
-                                except:
-                                    try:
-                                        maturity_date = datetime.strptime(maturity_date_str, "%d-%m-%Y").date()
-                                    except:
-                                        try:
-                                            maturity_date = datetime.strptime(maturity_date_str, "%d/%m/%Y").date()
-                                        except:
-                                            error_msg = f"Page {page_idx + 1}, FD {fd_idx + 1}: Invalid maturity date format: {maturity_date_str}"
-                                            errors.append(error_msg)
-                                            continue
-                                
-                                # Map owner name to family member ID
-                                family_member_id = None
-                                owner_name_lower = owner_name.lower().strip()
-                                if owner_name_lower in ["self", "me", "myself", ""]:
-                                    family_member_id = None
-                                elif owner_name_lower in family_members_map:
-                                    family_member_id = family_members_map[owner_name_lower]
-                                else:
-                                    # Try partial match
-                                    for fm_name, fm_id in family_members_map.items():
-                                        if owner_name_lower in fm_name or fm_name in owner_name_lower:
-                                            family_member_id = fm_id
-                                            break
-                                
-                                # Build asset data
-                                asset_data = {
-                                    "name": bank_name,
-                                    "type": "fixed_deposit",
-                                    "currency": currency,
-                                    "principal_amount": float(principal_amount),
-                                    "fd_interest_rate": float(fd_interest_rate),
-                                    "start_date": start_date.isoformat(),
-                                    "maturity_date": maturity_date.isoformat(),
-                                    "is_active": True,
-                                    "family_member_id": family_member_id
-                                }
-                                
-                                # Set current_value from maturity_amount if provided in the document
-                                if maturity_amount:
-                                    try:
-                                        asset_data["current_value"] = float(maturity_amount)
-                                    except (ValueError, TypeError):
-                                        asset_data["current_value"] = 0.0
-                                else:
-                                    asset_data["current_value"] = 0.0
-                                
-                                # Create AssetCreate object
-                                asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
-                                asset_create.model_validate_asset_fields()
-                                
-                                # Convert to dict
-                                try:
-                                    asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
-                                except AttributeError:
-                                    asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
-                                
-                                asset_dict["user_id"] = user_id
-                                
-                                # Convert decimals to strings
-                                decimal_fields = ['principal_amount', 'fd_interest_rate', 'current_value']
-                                for field in decimal_fields:
-                                    if field in asset_dict and asset_dict[field] is not None:
-                                        asset_dict[field] = str(asset_dict[field])
-                                
-                                # Insert into database
-                                response = supabase_service.table("assets").insert(asset_dict).execute()
-                                if response.data and len(response.data) > 0:
-                                    created_assets.append(response.data[0])
-                                else:
-                                    error_msg = f"Page {page_idx + 1}: Failed to create fixed deposit: {bank_name}"
-                                    errors.append(error_msg)
-                                    
-                            except Exception as e:
-                                errors.append(f"Page {page_idx + 1}: Error processing fixed deposit: {str(e)}")
+                    # Helper function to clean numeric strings
+                    def clean_numeric_string(value):
+                        if isinstance(value, str):
+                            cleaned = value.replace(',', '').replace(' ', '').replace('₹', '').replace('$', '').replace('€', '').replace('£', '').replace('%', '')
+                            return cleaned
+                        return str(value)
                     
-                    except json.JSONDecodeError as e:
-                        errors.append(f"Page {page_idx + 1}: Invalid JSON response from LLM: {str(e)}")
-                    except Exception as e:
-                        errors.append(f"Page {page_idx + 1}: {str(e)}")
-                
+                    # Convert amount invested to float
+                    try:
+                        amount_cleaned = clean_numeric_string(amount_invested)
+                        principal_amount_float = float(amount_cleaned)
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"FD {fd_idx + 1}: Invalid amount invested value: {amount_invested}"
+                        errors.append(error_msg)
+                        continue
+                    
+                    # Convert rate of interest to float
+                    try:
+                        rate_cleaned = clean_numeric_string(rate_of_interest)
+                        fd_interest_rate_float = float(rate_cleaned)
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"FD {fd_idx + 1}: Invalid interest rate value: {rate_of_interest}"
+                        errors.append(error_msg)
+                        continue
+                    
+                    # Convert duration to integer (months)
+                    try:
+                        duration_cleaned = clean_numeric_string(duration)
+                        duration_months_int = int(float(duration_cleaned))
+                    except (ValueError, TypeError) as e:
+                        error_msg = f"FD {fd_idx + 1}: Invalid duration value: {duration}"
+                        errors.append(error_msg)
+                        continue
+                    
+                    # Parse start date
+                    start_date = None
+                    try:
+                        start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                    except:
+                        try:
+                            start_date = datetime.strptime(start_date_str, "%d-%m-%Y").date()
+                        except:
+                            try:
+                                start_date = datetime.strptime(start_date_str, "%d/%m/%Y").date()
+                            except:
+                                error_msg = f"FD {fd_idx + 1}: Invalid start date format: {start_date_str}"
+                                errors.append(error_msg)
+                                continue
+                    
+                    # Calculate maturity date from start date and duration (in months)
+                    maturity_date = start_date + relativedelta(months=duration_months_int)
+                    
+                    # Map owner name to family member ID
+                    family_member_id = None
+                    owner_name_lower = owner_name.lower().strip()
+                    if owner_name_lower in ["self", "me", "myself", ""]:
+                        family_member_id = None
+                    elif owner_name_lower in family_members_map:
+                        family_member_id = family_members_map[owner_name_lower]
+                    else:
+                        # Try partial match
+                        for fm_name, fm_id in family_members_map.items():
+                            if owner_name_lower in fm_name or fm_name in owner_name_lower:
+                                family_member_id = fm_id
+                                break
+                    
+                    # Build asset data
+                    asset_data = {
+                        "name": bank_name,
+                        "type": "fixed_deposit",
+                        "currency": currency,
+                        "principal_amount": principal_amount_float,
+                        "fd_interest_rate": fd_interest_rate_float,
+                        "start_date": start_date.isoformat(),
+                        "maturity_date": maturity_date.isoformat(),
+                        "current_value": principal_amount_float,  # Use principal amount as current value
+                        "is_active": True,
+                        "family_member_id": family_member_id
+                    }
+                    
+                    # Create AssetCreate object
+                    asset_create = AssetCreate(**{k: v for k, v in asset_data.items() if v is not None})
+                    asset_create.model_validate_asset_fields()
+                    
+                    # Convert to dict
+                    try:
+                        asset_dict = asset_create.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+                    except AttributeError:
+                        asset_dict = asset_create.dict(exclude_unset=True, exclude_none=True)
+                    
+                    asset_dict["user_id"] = user_id
+                    
+                    # Convert decimals to strings
+                    decimal_fields = ['principal_amount', 'fd_interest_rate', 'current_value']
+                    for field in decimal_fields:
+                        if field in asset_dict and asset_dict[field] is not None:
+                            asset_dict[field] = str(asset_dict[field])
+                    
+                    # Check for duplicates before inserting
+                    # Create FD key from bank name and principal amount
+                    fd_key = f"{bank_name.lower().strip()}_{str(principal_amount_float).strip().lower()}"
+                    is_duplicate = False
+                    
+                    # Check against existing FDs in database
+                    if fd_key in existing_fd_keys:
+                        logger.info(f"Skipping fixed deposit - already exists in database: {bank_name}, Amount: {principal_amount_float}")
+                        print(f"Skipping fixed deposit - already exists in database: {bank_name}, Amount: {principal_amount_float}")
+                        skipped_fd_keys.append(f"{bank_name} (Amount: {principal_amount_float})")
+                        is_duplicate = True
+                    
+                    # Also check against newly created assets in this session
+                    if not is_duplicate:
+                        for created_asset in created_assets:
+                            if created_asset.get("type") == "fixed_deposit":
+                                created_bank_name = created_asset.get("name", "")
+                                created_amount = created_asset.get("principal_amount", "")
+                                if created_bank_name and created_amount:
+                                    created_key = f"{created_bank_name.lower().strip()}_{str(created_amount).strip().lower()}"
+                                    if fd_key == created_key:
+                                        logger.info(f"Skipping fixed deposit - duplicate in current session: {bank_name}")
+                                        print(f"Skipping fixed deposit - duplicate in current session: {bank_name}")
+                                        if f"{bank_name} (Amount: {principal_amount_float})" not in skipped_fd_keys:
+                                            skipped_fd_keys.append(f"{bank_name} (Amount: {principal_amount_float})")
+                                        is_duplicate = True
+                                        break
+                    
+                    if is_duplicate:
+                        continue
+                    
+                    # Insert into database
+                    logger.info(f"Inserting fixed deposit into database: {bank_name}, Amount: {principal_amount_float}")
+                    print(f"Inserting fixed deposit into database: {bank_name}")
+                    response = supabase_service.table("assets").insert(asset_dict).execute()
+                    if response.data and len(response.data) > 0:
+                        created_assets.append(response.data[0])
+                        logger.info(f"Successfully created fixed deposit: {bank_name} (ID: {response.data[0].get('id')})")
+                        print(f"Successfully created fixed deposit: {bank_name}")
+                    else:
+                        error_msg = f"Failed to create fixed deposit: {bank_name}"
+                        logger.error(error_msg)
+                        print(f"ERROR: {error_msg}")
+                        errors.append(error_msg)
+                        
                 except Exception as e:
-                    errors.append(f"Page {page_idx + 1}: Error calling LLM: {str(e)}")
-                
-                # Add 5-second delay after processing each page to prevent LLM overload
-                if page_idx < len(pdf_pages) - 1:  # Don't delay after the last page
-                    await asyncio.sleep(5)
+                    error_msg = f"FD {fd_idx + 1}: Error processing fixed deposit: {str(e)}"
+                    logger.error(error_msg)
+                    print(f"ERROR: {error_msg}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    errors.append(error_msg)
         
         elif asset_type == "stock":
             if not _stock_llm_service.api_key:
@@ -1846,6 +2298,12 @@ async def upload_pdf_for_asset_type(
                 message = f"Successfully added {len(created_assets)} bank account(s) from PDF. {skipped_msg}"
             else:
                 message = f"No new bank accounts were added. {skipped_msg}"
+        elif asset_type == "fixed_deposit" and skipped_fd_keys:
+            skipped_msg = f"Fixed deposit(s) with the following details were not added because they already exist in your portfolio: {', '.join(skipped_fd_keys)}"
+            if created_assets:
+                message = f"Successfully added {len(created_assets)} fixed deposit(s) from PDF. {skipped_msg}"
+            else:
+                message = f"No new fixed deposits were added. {skipped_msg}"
         elif created_assets:
             message = f"Successfully added {len(created_assets)} {asset_type}(s) from PDF"
         else:
@@ -1857,7 +2315,8 @@ async def upload_pdf_for_asset_type(
             "created_assets": created_assets,
             "errors": errors,
             "message": message,
-            "skipped_account_numbers": skipped_account_numbers if asset_type == "bank_account" else []
+            "skipped_account_numbers": skipped_account_numbers if asset_type == "bank_account" else [],
+            "skipped_fixed_deposits": skipped_fd_keys if asset_type == "fixed_deposit" else []
         }
     
     except HTTPException:
