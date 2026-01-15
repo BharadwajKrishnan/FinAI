@@ -4893,6 +4893,7 @@ export default function AssetsPage() {
                                                   setPremium(policy.premium.toString());
                                                   setNominee(policy.nominee || "");
                                                   setPremiumPaymentDate(policy.premiumPaymentDate || "");
+                                                  setSelectedFamilyMemberId(policy.familyMemberId || undefined);
                                                   setIsAddAssetModalOpen(true);
                                                 }}
                                                 className="ml-2 p-1.5 text-gray-400 hover:text-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded transition-colors"
@@ -6892,6 +6893,7 @@ export default function AssetsPage() {
                     onChange={(e) => setSelectedFamilyMemberId(e.target.value || undefined)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors"
                   >
+                    <option value="">None (Unassigned)</option>
                     {familyMembers.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name} ({member.relationship})

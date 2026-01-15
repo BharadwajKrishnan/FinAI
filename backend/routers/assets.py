@@ -469,7 +469,28 @@ async def update_asset(asset_id: str, asset: AssetUpdate, current_user=Depends(g
             user_id = str(current_user.id)
         else:
             raise HTTPException(status_code=401, detail="Unable to extract user ID from token")
-        update_data = asset.dict(exclude_unset=True, exclude_none=True)
+        
+        # Convert Pydantic model to dict
+        try:
+            update_data = asset.model_dump(exclude_unset=True, exclude_none=True, mode='json')
+        except AttributeError:
+            # Fallback for older Pydantic versions
+            update_data = asset.dict(exclude_unset=True, exclude_none=True)
+        
+        # Handle family_member_id explicitly - it needs to be included even if None
+        # Check if family_member_id was set in the request (even if None)
+        try:
+            # Get all fields including None values to check if family_member_id was set
+            all_data = asset.model_dump(exclude_unset=True, mode='json')
+        except AttributeError:
+            all_data = asset.dict(exclude_unset=True)
+        
+        if "family_member_id" in all_data:
+            # family_member_id was explicitly set in the request, include it in update
+            if all_data["family_member_id"] is None:
+                update_data["family_member_id"] = None
+            else:
+                update_data["family_member_id"] = str(all_data["family_member_id"])
         
         # Convert date objects to strings
         date_fields = ['purchase_date', 'nav_purchase_date', 'maturity_date', 'start_date',
