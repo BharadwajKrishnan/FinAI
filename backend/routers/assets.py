@@ -662,7 +662,7 @@ async def update_stock_prices(current_user=Depends(get_current_user)):
                 market = "IN" if currency == "INR" else ("EU" if currency == "EUR" else "US")
                 
                 # Fetch current price
-                current_price = await stock_price_service.get_stock_price(symbol, asset.get("stock_exchange"), market)
+                current_price = await stock_price_service.get_stock_price(symbol, market)
                 
                 if current_price:
                     # Calculate current value
@@ -722,7 +722,7 @@ async def get_stock_price(asset_id: str, current_user=Depends(get_current_user))
         market = "IN" if currency == "INR" else ("EU" if currency == "EUR" else "US")
         
         # Fetch current price
-        current_price = await stock_price_service.get_stock_price(symbol, asset.get("stock_exchange"), market)
+        current_price = await stock_price_service.get_stock_price(symbol, market)
         
         if current_price is None:
             raise HTTPException(status_code=404, detail=f"Could not fetch price for {symbol}")

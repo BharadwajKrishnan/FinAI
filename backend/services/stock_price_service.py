@@ -18,13 +18,12 @@ class StockPriceService:
         # You can add API keys here if needed
         self.alpha_vantage_api_key = None  # Set via environment variable if using Alpha Vantage
     
-    async def get_stock_price(self, symbol: str, exchange: Optional[str] = None, market: str = "US") -> Optional[Decimal]:
+    async def get_stock_price(self, symbol: str, market: str = "US") -> Optional[Decimal]:
         """
         Get current stock price for a given symbol
         
         Args:
             symbol: Stock symbol (e.g., "AAPL", "RELIANCE.NS")
-            exchange: Stock exchange (e.g., "NASDAQ", "NSE")
             market: Market region ("US", "IN", "EU")
         
         Returns:
@@ -40,16 +39,13 @@ class StockPriceService:
                     price = await self._fetch_yahoo_price(f"{symbol}.BO")
                 return price
             elif market == "EU":
-                # For European stocks, try different exchanges
+                # For European stocks, try different exchanges (same approach as Indian stocks)
                 # Format: SYMBOL.EX (e.g., ASML.AS for Amsterdam, SAP.DE for Frankfurt)
-                if exchange:
-                    price = await self._fetch_yahoo_price(f"{symbol}.{exchange}")
-                else:
-                    # Try common European exchanges
-                    for ext in ["L", "PA", "DE", "AS", "MI"]:  # London, Paris, Frankfurt, Amsterdam, Milan
-                        price = await self._fetch_yahoo_price(f"{symbol}.{ext}")
-                        if price:
-                            break
+                # Try common European exchanges
+                for ext in ["L", "PA", "DE", "AS", "MI"]:  # London, Paris, Frankfurt, Amsterdam, Milan
+                    price = await self._fetch_yahoo_price(f"{symbol}.{ext}")
+                    if price:
+                        break
                 return price
             else:
                 # US market (default)

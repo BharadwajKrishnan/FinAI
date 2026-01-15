@@ -60,7 +60,6 @@ class AssetBase(BaseModel):
 # Stock-specific fields
 class StockFields(BaseModel):
     stock_symbol: str = Field(..., min_length=1)
-    stock_exchange: Optional[str] = Field(None, max_length=50)
     quantity: Decimal = Field(..., gt=0)
     purchase_price: Decimal = Field(..., gt=0)
     purchase_date: date
@@ -131,7 +130,6 @@ class AssetCreate(AssetBase):
         }
     # Stock fields
     stock_symbol: Optional[str] = None
-    stock_exchange: Optional[str] = Field(None, max_length=50)
     quantity: Optional[Decimal] = Field(None, gt=0)
     purchase_price: Optional[Decimal] = Field(None, gt=0)
     purchase_date: Optional[date] = None
@@ -242,7 +240,6 @@ class AssetUpdate(BaseModel):
     
     # Stock fields
     stock_symbol: Optional[str] = None
-    stock_exchange: Optional[str] = Field(None, max_length=50)
     quantity: Optional[Decimal] = Field(None, gt=0)
     purchase_price: Optional[Decimal] = Field(None, gt=0)
     purchase_date: Optional[date] = None
@@ -301,7 +298,6 @@ class Asset(AssetBase):
     
     # Stock fields
     stock_symbol: Optional[str] = None
-    stock_exchange: Optional[str] = None
     quantity: Optional[Decimal] = None
     purchase_price: Optional[Decimal] = None
     purchase_date: Optional[date] = None
