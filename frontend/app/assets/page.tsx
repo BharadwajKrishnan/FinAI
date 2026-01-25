@@ -1880,13 +1880,19 @@ export default function AssetsPage() {
               if (asset.notes) {
                 try {
                   const notesData = JSON.parse(asset.notes);
-                  if (notesData.value_at_cost) {
+                  if (notesData && notesData.value_at_cost) {
                     totalInvested = parseFloat(notesData.value_at_cost);
                   }
                 } catch (e) {
-                  // If notes is not JSON or doesn't have value_at_cost, use 0
-                  console.warn("Could not parse value_at_cost from notes:", e);
+                  // If notes is not JSON or doesn't have value_at_cost, try to calculate as fallback
+                  console.warn("Could not parse value_at_cost from notes:", e, "Asset notes:", asset.notes);
                 }
+              }
+              // Fallback: If value_at_cost is not available, calculate as NAV * Units
+              // This is a reasonable estimate for the amount invested
+              if (totalInvested === 0 && navValue > 0 && unitsValue > 0) {
+                totalInvested = navValue * unitsValue;
+                console.log(`Calculated totalInvested as fallback (NAV * Units) for fund ${asset.name}: ${totalInvested}`);
               }
               // Use current_value directly from database (extracted by LLM, not calculated)
               const currentWorth = parseFloat(asset.current_value || "0");
@@ -2649,6 +2655,8 @@ export default function AssetsPage() {
       if (!accessToken) return;
 
       const currency = marketConfig[market].currency;
+      // Store value_at_cost in notes field as JSON (same format as PDF upload)
+      const notesData = fund.totalInvested ? { value_at_cost: fund.totalInvested.toString() } : null;
       const assetData = {
         name: fund.fundName,
         type: "mutual_fund",
@@ -2660,6 +2668,8 @@ export default function AssetsPage() {
         is_active: true, // Explicitly set is_active
         // Always set family_member_id - null for Self, or the family member ID
         family_member_id: fund.familyMemberId || null,
+        // Store totalInvested (value_at_cost) in notes field as JSON
+        notes: notesData ? JSON.stringify(notesData) : null,
       };
 
 
@@ -4043,9 +4053,16 @@ export default function AssetsPage() {
                                                 onClick={(e) => e.stopPropagation()}
                                               />
                                               <div className="flex-1">
-                                                <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                                                  {fund.fundName}
-                                                </h4>
+                                                <div className="flex items-center gap-2 mb-2">
+                                                  <h4 className="text-sm font-semibold text-gray-900">
+                                                    {fund.fundName}
+                                                  </h4>
+                                                  {selectedFamilyMemberFilter === "all" && (
+                                                    <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                                      {getFamilyMemberName(fund.familyMemberId)}
+                                                    </span>
+                                                  )}
+                                                </div>
                                                 <div className="flex items-center space-x-4 text-xs text-gray-600">
                                                   <span>
                                                     NAV: {currentMarket.symbol}
