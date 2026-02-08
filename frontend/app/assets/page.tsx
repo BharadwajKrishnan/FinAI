@@ -2223,8 +2223,8 @@ export default function AssetsPage() {
             alert(createdAsset.message || "This stock already exists in your portfolio.");
             return null;
           }
-          // Refresh assets after creation
-          await fetchAssets();
+          // Don't call fetchAssets() here - the form handler already adds it to state manually
+          // This prevents duplicate entries
           return createdAsset.id;
         }
         return null;
@@ -2787,8 +2787,8 @@ export default function AssetsPage() {
             return null; // Don't add to UI since it's a duplicate
           }
           
-          // Refresh assets after creation
-          await fetchAssets();
+          // Don't call fetchAssets() here - the form handler already adds it to state manually
+          // This prevents duplicate entries
           return createdAsset.id;
         } else {
           const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
