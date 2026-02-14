@@ -1,0 +1,74 @@
+<Task>
+Your task is to update the user's stock portfolio based on the new transactions from a contract note. A contract note contains buy/sell transactions executed on a trading day. You must match existing stocks in the portfolio with the new transactions and update them accordingly, or add new stocks if they don't exist.
+
+CRITICAL RULES:
+1. Match stocks by Stock Symbol (case-insensitive). If a stock symbol in the contract note matches an existing stock in the portfolio, UPDATE that stock. Do NOT create a duplicate.
+2. For BUY transactions: Add the new quantity to existing quantity and recalculate the average purchase price using weighted average.
+3. For SELL transactions: Subtract the sold quantity from existing quantity. If quantity becomes zero or negative, set quantity to 0 and mark the stock appropriately.
+4. For new stocks (symbols not in portfolio): Add them as new entries.
+5. Ensure NO duplicate stocks are created - each stock symbol should appear only once in the final portfolio.
+6. Update purchase_date to the most recent transaction date if it's newer.
+7. Update current_price if provided in the contract note.
+8. Preserve all other fields from existing stocks (id, name, family_member, etc.) unless explicitly changed in the contract note.
+</Task>
+
+<Important>
+1. Extract transaction details from the contract note: stock symbol, quantity, price, transaction type (BUY/SELL), transaction date.
+2. Match each transaction with existing stocks in the portfolio by Stock Symbol (case-insensitive matching).
+3. For matching stocks:
+   - If BUY: New Average Price = ((Existing Quantity × Existing Average Price) + (New Quantity × New Price)) / (Existing Quantity + New Quantity)
+   - If SELL: Subtract quantity, keep average price unchanged (FIFO/LIFO not required, just reduce quantity)
+4. For new stocks: Add them with the transaction details from the contract note.
+5. Return the COMPLETE updated portfolio in JSON format - include ALL stocks (both updated and unchanged).
+6. The output must be a JSON array of stock objects.
+7. Do not include any explanatory text - only return the JSON array.
+8. Extract only stocks/equities (shares of companies). Do not extract details related to mutual funds, bonds, bank accounts, fixed deposits or commodities.
+</Important>
+
+<Output Format>
+Each stock object in the JSON array MUST have the following keys with EXACT names:
+1. "id" - The existing asset ID from the portfolio (if updating) or null/empty string (if new stock)
+2. "Stock/Equity Name" - Stock name (preserve from existing or extract from contract note)
+3. "Stock Symbol" - Stock symbol/ticker (must match exactly for updates)
+4. "Average Price" - Updated average purchase price (calculated for BUY transactions, unchanged for SELL)
+5. "Current Price" - Current market price (from contract note if provided, otherwise from existing)
+6. "Quantity" - Updated total quantity (after adding/subtracting transaction quantity)
+7. "Purchase Date" - Most recent transaction date in YYYY-MM-DD format
+8. "Value at Cost" - Average Price × Quantity (calculated value)
+9. "Current Value" - Current Price × Quantity (calculated value)
+10. "Owner Name" - Preserve from existing stock or extract from contract note
+11. "market" - Market (india/europe) - preserve from existing or infer from currency
+</Output Format>
+
+<Current Portfolio>
+The user's current stock portfolio is provided below. This contains all existing stocks that need to be updated or preserved.
+{portfolio}
+</Current Portfolio>
+
+<Contract Note Transactions>
+The contract note document contains the new transactions that need to be applied to the portfolio.
+{contract_note}
+</Contract Note Transactions>
+
+<Family Member Details>
+The following family members have been added by the user. Use this information to identify which family member each stock belongs to by matching the account holder name in the contract note with the names below.
+{family_members}
+
+When extracting the "Owner Name" field:
+1. Match the account holder name from the contract note with the family member names listed above (case-insensitive matching)
+2. If you find a match, use the exact name as shown in the family members list above
+3. If no match is found or the account holder name is not clearly visible in the document, use "self" as the Owner Name
+4. For existing stocks being updated, preserve the existing Owner Name unless the contract note clearly indicates a different owner
+</Family Member Details>
+
+<Instructions>
+1. Parse all transactions from the contract note (identify BUY vs SELL transactions)
+2. For each transaction:
+   - Find matching stock in portfolio by Stock Symbol (case-insensitive)
+   - If found: Update quantity and average price based on transaction type
+   - If not found: Add as new stock entry
+3. Include all existing stocks that were not affected by transactions (unchanged stocks)
+4. Ensure no duplicate stocks exist in the final portfolio
+5. Return the complete updated portfolio as a JSON array
+</Instructions>
+

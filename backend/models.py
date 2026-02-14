@@ -281,14 +281,6 @@ class AssetUpdate(BaseModel):
     commodity_units: Optional[str] = Field(None, max_length=20)
     commodity_purchase_date: Optional[date] = None
     commodity_purchase_price: Optional[Decimal] = Field(None, gt=0)
-    
-    # Commodity fields
-    commodity_name: Optional[str] = Field(None, max_length=255)
-    form: Optional[str] = Field(None, max_length=50)
-    commodity_quantity: Optional[Decimal] = Field(None, gt=0)
-    commodity_units: Optional[str] = Field(None, max_length=20)
-    commodity_purchase_date: Optional[date] = None
-    commodity_purchase_price: Optional[Decimal] = Field(None, gt=0)
 
 
 # Asset Response Model

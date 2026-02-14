@@ -1,0 +1,25 @@
+<Task>
+Your task is to identify if the uploaded PDF document is a contract note or not.
+
+A contract note is a document that contains the transactions executed by a user on a trading day. It typically includes:
+1. Buy and/or sell orders for stocks/equities
+2. Transaction details such as stock symbols, quantities, prices
+3. Trade execution information
+4. Settlement details
+5. Broker information
+6. Trading date
+</Task>
+
+<Important>
+1. Analyze the entire document content provided below.
+2. If the document is a contract note (contains trading day transactions), return ONLY the word "NOTE" (without quotes, without any other text).
+3. If the document is NOT a contract note, return ONLY the word "NOT_NOTE" (without quotes, without any other text).
+4. Do not include any explanations, additional text, or formatting in your response.
+5. Your response must be exactly one of these two words: "NOTE" or "NOT_NOTE".
+</Important>
+
+<Document>
+Here is the complete document content uploaded by the user. The document may contain multiple pages separated by "--- Page Separator ---".
+{page}
+</Document>
+
